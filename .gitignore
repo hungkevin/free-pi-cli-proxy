@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+.bun-install-cache/
+npm-cache/
+
+# Logs
+logs/
+*.log
+proxy_output.txt
+
+# Sensitive files (do not commit)
+api-keys.json
+.env
+credentials.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary test files
+test-body.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Build
+dist/
+build/
