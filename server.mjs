@@ -552,7 +552,7 @@ function freepiHeaders(sessionId, body, model) {
   const gravityCtx = getGravityContextHeader();
   if (gravityCtx) {
     headers["x-gravity-context"] = gravityCtx;
-    log("debug", "[GRAVITY] Request with ad context (session established)");
+    log("warn", "[GRAVITY] Request with ad context (session established)");
   }
   return headers;
 }
