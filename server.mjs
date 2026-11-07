@@ -298,6 +298,7 @@ async function loadFreepiJwt() {
     freepiJwtSource = "env";
     log("info", "[AUTH] Using JWT from FREEPI_JWT environment variable");
     await initGravityPixel(freepiJwt);
+    await releaseSessionAtStartup();
     return;
   }
 
@@ -311,6 +312,7 @@ async function loadFreepiJwt() {
       freepiJwtSource = "file";
       log("info", `[AUTH] Loaded JWT from ${credPath}`);
       await initGravityPixel(freepiJwt);
+      await releaseSessionAtStartup();
       return;
     }
   } catch (e) {
@@ -330,6 +332,7 @@ async function loadFreepiJwt() {
         freepiJwtSource = "device-flow";
         log("info", "[AUTH] GitHub 登入成功，JWT 已寫入 " + getFreePiCredentialsPath() + " 與 .env");
         await initGravityPixel(freepiJwt);
+        await releaseSessionAtStartup();
         return;
       } catch (e) {
         console.error("[AUTH] device flow 登入失敗：" + (e?.message || e));
@@ -554,6 +557,44 @@ function freepiHeaders(sessionId, body, model) {
   return headers;
 }
 
+// ── Session 重置（釋放過期 session，避免 409 錯誤）────────────────────
+// 調用 POST {baseUrl}/session/reset 釋放殘留的 CLI session lease。
+// free-pi.ai 限制每個帳號最多 4 個並行 session，超過會回 409。
+// 本函數在啟動時及遇到 409 錯誤時自動調用，避免手動執行 /close-other-session。
+async function releaseSession() {
+  if (!freepiJwt) return false;
+  try {
+    const res = await fetch(freepiUrl("/session/reset"), {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${freepiJwt}`,
+        "Content-Type": "application/json",
+      },
+    });
+    if (!res.ok) {
+      log("warn", `[SESSION RESET] HTTP ${res.status} — could not release session`);
+      return false;
+    }
+    const parsed = await res.json().catch(() => ({}));
+    const released = parsed.released === true;
+    if (released) {
+      log("info", "[SESSION RESET] Cleared stuck session — slot freed");
+    } else {
+      log("info", "[SESSION RESET] No other session was running");
+    }
+    return true;
+  } catch (e) {
+    log("warn", `[SESSION RESET] Failed: ${e?.message || e}`);
+    return false;
+  }
+}
+
+// 啟動時嘗試釋放殘留 session（在 JWT 載入後調用）
+async function releaseSessionAtStartup() {
+  if (!freepiJwt) return;
+  await releaseSession();
+}
+
 // ── Upstream transport (native fetch) ──────────────────────────────
 const FREEPI_IDLE_TIMEOUT_MS = 120000; // max silence for headers and between body chunks
 
@@ -633,9 +674,22 @@ function setFreepiFetchImpl(fn) {
 
 async function freepiFetchWithRetry(opts, body, controller) {
   let lastRes = null;
+  let sessionResetTried = false;
   for (let attempt = 0; ; attempt++) {
     const res = await freepiFetchImpl(opts, body, controller);
     lastRes = res;
+    // 409 Too Many Sessions → 釋放殘留 session 並重試一次
+    if (res.status === 409 && !sessionResetTried) {
+      sessionResetTried = true;
+      log("warn", `[FREEPI 409 ${opts._tag || "??"}] session limit reached — releasing stale session`);
+      await releaseSession();
+      // 重新獲取 JWT（可能已失效）並重試
+      if (freepiJwt) {
+        await sleep(1000);
+        continue;
+      }
+      return res;
+    }
     if (res.status !== 429 || attempt >= RETRY_429_MAX) {
       return res;
     }

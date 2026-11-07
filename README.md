@@ -234,6 +234,11 @@ curl -N -X POST http://127.0.0.1:6447/v1/chat/completions \
 > $env:FREEPI_CLIENT_VERSION="0.6.14"; bun server.mjs
 > ```
 
+> ⚠️ **Session 自動重置**：上游限制每個帳號最多 4 個並行 CLI session。
+> 若收到 `You've already got 4 free-pi CLI sessions running`，proxy 會在啟動時自動調用 `POST /session/reset` 釋放殘留 session。
+> 若請求時收到 409 錯誤，proxy 會自動重置並重試一次。
+> 無需手動執行 `/close-other-session` 或 `npx free-pi-cli@latest`。
+
 ## 專案結構
 
 ```

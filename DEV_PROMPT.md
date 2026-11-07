@@ -107,6 +107,14 @@
 | `RETRY_429_HARD_LIMIT_MS` | `300000` | 超過此值（5 分鐘）視為日額度用盡，快速失敗 |
 
 ─────────────────────────────────────────────────────────────────────────────
+## Session 自動重置（避免 409 session 限制錯誤）
+- 啟動時自動調用 `POST {FREEPI_BASE_URL}/session/reset` 釋放殘留的 CLI session lease
+- 上游限制每個帳號最多 4 個並行 session，超過會回 409 Too Many Sessions
+- 若請求收到 409 錯誤，proxy 會自動重置 session 並重試一次（最多重試 1 次）
+- log 會顯示 `[SESSION RESET] Cleared stuck session — slot freed`
+- 無需手動執行 `/close-other-session` 或 `npx free-pi-cli@latest`
+
+─────────────────────────────────────────────────────────────────────────────
 # 啟動與關閉
 
 ## 啟動（從 .env 自動讀取所有設定）
