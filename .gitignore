@@ -2,6 +2,7 @@
 node_modules/
 .bun-install-cache/
 npm-cache/
+.npm-cache/
 
 # Logs
 logs/
