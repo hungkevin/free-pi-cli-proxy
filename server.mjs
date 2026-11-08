@@ -2392,19 +2392,19 @@ function fmtTokens(n) {
 
 function printModels() {
   const line = "-".repeat(123);
-  log("info", "");
-  log("info", `  Free models (free-pi.ai): ${MODELS.length}`);
-  log("info", `  ${line}`);
-  log("info",
+  console.log("");
+  console.log(`  Free models (free-pi.ai): ${MODELS.length}`);
+  console.log(`  ${line}`);
+  console.log(
     `  ${"MODEL ID".padEnd(34)}${"NAME".padEnd(32)}${"CONTEXT".padEnd(10)}${"OUTPUT".padEnd(10)}${"REASON".padEnd(8)}${"TOOLS".padEnd(7)}RELEASE`,
   );
   for (const id of MODELS) {
     const m = MODEL_META[id] || {};
-    log("info",
+    console.log(
       `  ${id.padEnd(34)}${(m.name || "-").padEnd(32)}${fmtTokens(m.contextLimit).padEnd(10)}${fmtTokens(m.outputLimit).padEnd(10)}${(m.reasoning ? "yes" : "no").padEnd(8)}${(m.toolCall ? "yes" : "no").padEnd(7)}${m.releaseDate || "-"}`,
     );
   }
-  log("info", `  ${line}`);
+  console.log(`  ${line}`);
 }
 
 // ── Start ──────────────────────────────────────────────────────────
@@ -2420,19 +2420,23 @@ function isMainModule() {
 async function main() {
   // Resolve client version: CLI param > env (.env) > default
   FREEPI_CLIENT_VERSION = resolveClientVersion(process.argv.slice(2));
-  log("info", `[AUTH] Client version set to: ${FREEPI_CLIENT_VERSION}`);
+  console.log(`[AUTH] Client version set to: ${FREEPI_CLIENT_VERSION}`);
   loadKeys();
   await loadFreepiJwt();
   await loadModels();
-  printModels();
+  if (LOG_LEVEL !== "silent") {
+    printModels();
+  }
   const server = app.listen(PORT, HOST, () => {
-    log("info", `free-pi-cli-proxy v${PROXY_VERSION} on http://${HOST}:${PORT} (runtime: ${RUNTIME})`);
-    log("info", "  OpenAI:    POST /v1/chat/completions");
-    log("info", "  Anthropic: POST /v1/messages");
-    log("info", "  Models:    GET  /v1/models");
-    log("info", "  Health:    GET  /health");
-    for (const [name, key] of Object.entries(apiKeys)) {
-      log("info", `  ${name.padEnd(15)} ${MASK_KEYS ? maskKey(key) : key}`);
+    if (LOG_LEVEL !== "silent") {
+      console.log(`free-pi-cli-proxy v${PROXY_VERSION} on http://${HOST}:${PORT} (runtime: ${RUNTIME})`);
+      console.log("  OpenAI:    POST /v1/chat/completions");
+      console.log("  Anthropic: POST /v1/messages");
+      console.log("  Models:    GET  /v1/models");
+      console.log("  Health:    GET  /health");
+      for (const [name, key] of Object.entries(apiKeys)) {
+        console.log(`  ${name.padEnd(15)} ${MASK_KEYS ? maskKey(key) : key}`);
+      }
     }
   });
   server.on("error", (e) => {
