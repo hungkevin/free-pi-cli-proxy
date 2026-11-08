@@ -14,7 +14,7 @@
 
 | 項目 | 狀態 | 說明 |
 |------|------|------|
-| `server.mjs` | ✅ 完成 | 單一 ESM 檔案，無建置步驟，約 2300 行 |
+| `server.mjs` | ✅ 完成 | 單一 ESM 檔案，無建置步驟，約 2600 行 |
 | `login.mjs` | ✅ 完成 | 內建 GitHub device flow 登入工具（取代 `npx free-pi-cli`） |
 | `start.bat` | ✅ 完成 | Windows 常駐啟動腳本（log 輪替 10MB） |
 | `kill-6447.ps1` | ✅ 完成 | 關閉 proxy 並釋放 port 6447 |
@@ -89,7 +89,7 @@
 - tool_use / tool_result 區塊轉換
 
 ## 7. 健康檢查
-- `GET /health`：status、version、runtime、models 數、models_source、models_loaded_at、upstream_auth、client_version、session_ttl_ms、endpoints 清單
+- `GET /health`：status、version、runtime、models 數、models_source、models_loaded_at、upstream_auth、client_version、session_ttl_ms、**quota**（remaining_credits_today / allowance_credits / cap_usd_today / lane / tier 等）、endpoints 清單
 
 ## 8. Session 映射
 - 依 API key + 可選 `x-session-id` header 復用上游 session id
@@ -178,8 +178,8 @@ print(resp.choices[0].message.content)
 
 ```powershell
 cd C:\work\free-pi-cli-proxy
-bun test             # 執行 test/test_all.mjs（需先啟動 mock_server.mjs）
-node test/mock_server.mjs   # 啟動假上游（另一個終端機）
+bun test             # 執行 test/test_all.mjs（內建 mock 上游，自動啟動與關閉，不需先開 proxy）
+node test/mock_server.mjs   # 僅需在要手動實測時另開終端機啟動假上游
 ```
 
 ─────────────────────────────────────────────────────────────────────────────
@@ -194,7 +194,7 @@ node test/mock_server.mjs   # 啟動假上游（另一個終端機）
 ─────────────────────────────────────────────────────────────────────────────
 # 已知限制
 
-- 上游每個帳號最多 4 個並行 CLI session。若收到 `You've already got 4 free-pi CLI sessions running`，請等待過期 session 自動釋放，或執行 `/close-other-session` 釋放。
+- 上游每個帳號最多 4 個並行 CLI session。proxy 啟動時會自動呼叫 `POST /session/reset` 釋放殘留 session；若請求時收到 409，proxy 會自動重置並重試一次，無需手動操作。
 - 若上游回 `Ads aren't showing for this account`，表示廣告展示未成功，請確認 Gravity pixel 未被停用（`GRAVITY_DISABLE_PIXEL` 不應為 1），或稍後重試。
 
 ─────────────────────────────────────────────────────────────────────────────

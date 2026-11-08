@@ -27,8 +27,6 @@ npm install
 
 ### 2. 取得 free-pi JWT（三選一）
 
-### 2. 取得 free-pi JWT（三選一）
-
 #### 方式 A：用本專案內建登入（推薦，免安裝 free-pi-cli）
 
 ```bash
@@ -226,6 +224,11 @@ curl -N -X POST http://127.0.0.1:6447/v1/chat/completions \
 | `warn` | ✅ | ✅ | ✅ | ❌ | ✅ + 警告 |
 | `error` | ✅ | ✅ | ❌ | ❌ | 只顯示錯誤 |
 | `silent` | ❌ | ❌ | ❌ | ❌ | ❌（完全靜默） |
+
+### 其他環境變數
+
+| 變數 | 預設 | 說明 |
+|------|------|------|
 | `KEYS_FILE` | `./api-keys.json` | API Keys 檔案路徑 |
 | `MASK_KEYS` | `0` | `1` = 啟動時遮罩印出的 keys |
 | `GRAVITY_PIXEL_ID` | `6cd74804-0541-4d9b-899d-d7fceb465b6f` | Gravity 像素 ID，與 free-pi-cli 相同，一般無需修改 |
