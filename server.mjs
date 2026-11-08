@@ -407,16 +407,53 @@ function getFreePiCredentialsPath() {
   return path.join(homedir(), ".free-pi", "agent", "credentials.json");
 }
 
+// 驗證 JWT 是否有效（GET /me）
+async function verifyFreepiJwt(jwt) {
+  try {
+    const res = await fetch(freepiUrl("/me"), {
+      method: "GET",
+      headers: { "Authorization": `Bearer ${jwt}` },
+    });
+    if (res.status === 401) return false;
+    if (!res.ok) return true; // 其他錯誤（如網路問題）不視為 JWT 無效
+    return true;
+  } catch {
+    return true; // 網路錯誤不視為 JWT 無效
+  }
+}
+
+// 將 JWT 寫入 credentials.json 與 .env
+function saveFreepiJwt(jwt) {
+  // 寫入 credentials.json
+  const credPath = getFreePiCredentialsPath();
+  try {
+    fs.mkdirSync(path.dirname(credPath), { recursive: true });
+    fs.writeFileSync(credPath, JSON.stringify({ token: jwt }), { mode: 0o600 });
+    try { fs.chmodSync(credPath, 0o600); } catch {}
+    log("info", `[AUTH] JWT 已寫入 ${credPath}`);
+  } catch (e) {
+    log("warn", `[AUTH] 無法寫入 ${credPath}：${e.message}`);
+  }
+  // 寫入 .env
+  writeJwtToEnvFile(jwt);
+}
+
 async function loadFreepiJwt() {
   // 1. Try env var first
   if (process.env.FREEPI_JWT && process.env.FREEPI_JWT.trim()) {
     freepiJwt = process.env.FREEPI_JWT.trim();
     freepiJwtSource = "env";
     log("info", "[AUTH] Using JWT from FREEPI_JWT environment variable");
-    await initGravityPixel(freepiJwt);
-    await initAds();
-    await releaseSessionAtStartup();
-    return;
+    const valid = await verifyFreepiJwt(freepiJwt);
+    if (!valid) {
+      log("warn", "[AUTH] FREEPI_JWT 無效，將嘗試重新登入");
+      freepiJwt = null;
+    } else {
+      await initGravityPixel(freepiJwt);
+      await initAds();
+      await releaseSessionAtStartup();
+      return;
+    }
   }
 
   // 2. Try credentials file
@@ -428,10 +465,16 @@ async function loadFreepiJwt() {
       freepiJwt = parsed.token;
       freepiJwtSource = "file";
       log("info", `[AUTH] Loaded JWT from ${credPath}`);
-      await initGravityPixel(freepiJwt);
-      await initAds();
-      await releaseSessionAtStartup();
-      return;
+      const valid = await verifyFreepiJwt(freepiJwt);
+      if (!valid) {
+        log("warn", `[AUTH] 儲存的 JWT 無效，將嘗試重新登入`);
+        freepiJwt = null;
+      } else {
+        await initGravityPixel(freepiJwt);
+        await initAds();
+        await releaseSessionAtStartup();
+        return;
+      }
     }
   } catch (e) {
     // File doesn't exist or invalid JSON

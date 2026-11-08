@@ -186,6 +186,39 @@ function saveJwt(jwt) {
   try { fs.chmodSync(CREDENTIALS_PATH, 0o600); } catch {}
 }
 
+// 將 JWT 寫入 .env 檔案（更新或新增 FREEPI_JWT 行）
+function writeJwtToEnvFile(token) {
+  const ENV_FILE_PATH = path.resolve(".env");
+  try {
+    let envContent = "";
+    try {
+      envContent = fs.readFileSync(ENV_FILE_PATH, "utf8");
+    } catch {
+      // 檔案不存在，從頭建立
+    }
+    const lines = envContent.split(/\r?\n/);
+    const jwtLine = `FREEPI_JWT=${token}`;
+    let replaced = false;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith("FREEPI_JWT=")) {
+        lines[i] = jwtLine;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) {
+      if (lines.length > 0 && lines[lines.length - 1].trim() !== "") {
+        lines.push("");
+      }
+      lines.push(jwtLine);
+    }
+    fs.writeFileSync(ENV_FILE_PATH, lines.join("\n") + "\n");
+    log("  JWT 已自動寫入 .env");
+  } catch (e) {
+    log("  [WARN] 無法寫入 .env 檔案：" + e.message);
+  }
+}
+
 // ── main ───────────────────────────────────────────────────────
 async function main() {
   log("");
@@ -216,6 +249,7 @@ async function main() {
 
   const me = await verifyToken(token);
   saveJwt(token);
+  writeJwtToEnvFile(token);
 
   log("");
   log("✓ 登入成功");
@@ -226,6 +260,7 @@ async function main() {
     if (me.consent_version) log(`  同意版本：${me.consent_version}`);
   }
   log(`  已寫入 ${CREDENTIALS_PATH}`);
+  log(`  已寫入 .env (FREEPI_JWT)`);
   log("");
   log("現在可直接啟動 proxy：bun server.mjs");
   log("");
