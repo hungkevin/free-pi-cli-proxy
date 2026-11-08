@@ -470,6 +470,8 @@ async function loadFreepiJwt() {
         log("warn", `[AUTH] 儲存的 JWT 無效，將嘗試重新登入`);
         freepiJwt = null;
       } else {
+        // 將 credentials.json 中的 JWT 同步寫入 .env，方便下次直接讀取
+        writeJwtToEnvFile(freepiJwt);
         await initGravityPixel(freepiJwt);
         await initAds();
         await releaseSessionAtStartup();
