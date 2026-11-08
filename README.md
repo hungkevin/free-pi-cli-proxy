@@ -214,6 +214,7 @@ curl -N -X POST http://127.0.0.1:6447/v1/chat/completions \
 | `FREEPI_CLIENT_VERSION` | `0.4.10` | CLI 版本字串（上游有強制更新閘門）。設定方式（優先順序：命令列參數 > 環境變數/.env > 預設值）：<br>1. `bun server.mjs --client-version 0.6.14`<br>2. `FREEPI_CLIENT_VERSION=0.6.14`（或在 `.env` 中設定） |
 | `PROXY_PORT` | `6447` | 監聽埠 |
 | `LOG_LEVEL` | `info` | `debug\|info\|warn\|error\|silent`，見下表详细說明 |
+| `AD_REFRESH_MS` | `600000` | 廣告刷新間隔（毫秒），預設 600000ms = 10 分鐘 |
 | `SESSION_TTL_MS` | `1800000` | Session 存活時間（毫秒），0 = 不復用 |
 
 ### LOG_LEVEL 行為表
@@ -293,6 +294,16 @@ bun server.mjs
 curl http://127.0.0.1:6447/health
 curl http://127.0.0.1:6447/v1/models
 ```
+
+## 多帳號輪流使用（備註）
+
+free-pi.ai 上游限制每個帳號每日免費額度。如果您有多個 GitHub 帳號（每個都有免費額度），可以通過以下方式輪流使用：
+
+1. **準備多個 JWT**：分別登入多個免-pi-cli 帳號，取得各自的 JWT。
+2. **輪流切換**：在 `.env` 中切換 `FREEPI_JWT` 環境變數，重啟 proxy 即可切換帳號。
+3. **自動化輪流（建議）**：可編寫簡單腳本，當一個帳號額度用盡（收到 429 或額度為 0）時，自動切換到下一個帳號的 JWT 並重啟 proxy。
+
+> 注意：目前版本尚未實作全自動輪流，需要手動切換 `.env` 中的 `FREEPI_JWT` 並重啟 proxy。
 
 ## 授權
 
