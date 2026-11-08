@@ -883,7 +883,6 @@ async function freepiFetchWithRetry(opts, body, controller) {
     await sleep(wait);
     if (controller.signal.aborted) return res;
   }
-}
 
 // ── 獲取 free-pi 上游額度資訊（GET /me）──────────────────────────────
 async function getFreepiQuota() {
@@ -901,9 +900,13 @@ async function getFreepiQuota() {
     const data = await res.json();
     return {
       remaining_usd_today: data.remaining_usd_today,
+      remaining_credits_today: data.remaining_credits_today,
+      allowance_credits: data.allowance_credits,
+      cap_usd_today: data.cap_usd_today,
+      credit_usd: data.credit_usd,
+      bonus_credits: data.bonus_credits,
       lane: data.lane,
-      remaining: data.remaining,
-      total: data.total,
+      tier: data.tier,
       updated_at: new Date().toISOString(),
     };
   } catch (e) {
@@ -1111,8 +1114,8 @@ function sendUpstreamError(res, status, raw, zenHeaders, shape = "openai") {
   if (status === 429 && lastQuotaInfo) {
     error.quota_info = lastQuotaInfo;
     // 根據配額狀態給出更明確的訊息
-    const remaining = lastQuotaInfo.remaining_usd_today ?? lastQuotaInfo.remaining;
-    const total = lastQuotaInfo.total;
+    const remaining = lastQuotaInfo.remaining_usd_today ?? lastQuotaInfo.remaining_credits_today;
+    const total = lastQuotaInfo.cap_usd_today ?? lastQuotaInfo.allowance_credits;
     if (remaining !== undefined) {
       const pct = total && total > 0 ? Math.round((remaining / total) * 100) : 0;
       if (pct <= 0) {
