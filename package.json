@@ -12,7 +12,7 @@
     "start": "bun server.mjs",
     "dev": "bun server.mjs",
     "login": "bun login.mjs",
-    "test": "bun test test/test_all.mjs"
+    "test": "node test/test_all.mjs"
   },
   "dependencies": {
     "@gravity-ai/api": "^1.2.1",

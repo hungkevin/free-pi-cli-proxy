@@ -283,10 +283,10 @@ free-pi-cli-proxy/
 # 安裝依賴
 bun install
 
-# 執行測試（需先啟動 proxy 或用 mock 上游）
-bun test/test_models.mjs
-bun test/test_chat_sync.mjs
-bun test/test_chat_stream.mjs
+# 執行測試（內建 mock 上游，會自動啟動與關閉，不需先開 proxy）
+bun run test
+# 或
+node test/test_all.mjs
 
 # 或直接啟動實測
 bun server.mjs
