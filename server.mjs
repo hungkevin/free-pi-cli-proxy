@@ -121,7 +121,7 @@ function loadKeys() {
       "user-default": "fp-" + crypto.randomBytes(20).toString("hex"),
     };
     fs.writeFileSync(keysFile, JSON.stringify(apiKeys, null, 2));
-    console.log("[INIT] Generated new API keys →", keysFile);
+    log("info", `[INIT] Generated new API keys → ${keysFile}`);
     return;
   }
   apiKeys = normalized;
