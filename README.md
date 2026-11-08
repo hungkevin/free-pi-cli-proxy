@@ -213,8 +213,18 @@ curl -N -X POST http://127.0.0.1:6447/v1/chat/completions \
 | `FREEPI_BASE_URL` | `https://api.freepi.ai` | 上游 Base URL |
 | `FREEPI_CLIENT_VERSION` | `0.4.10` | CLI 版本字串（上游有強制更新閘門）。設定方式（優先順序：命令列參數 > 環境變數/.env > 預設值）：<br>1. `bun server.mjs --client-version 0.6.14`<br>2. `FREEPI_CLIENT_VERSION=0.6.14`（或在 `.env` 中設定） |
 | `PROXY_PORT` | `6447` | 監聽埠 |
-| `LOG_LEVEL` | `info` | `debug\|info\|warn\|error\|silent` |
+| `LOG_LEVEL` | `info` | `debug\|info\|warn\|error\|silent`，見下表详细說明 |
 | `SESSION_TTL_MS` | `1800000` | Session 存活時間（毫秒），0 = 不復用 |
+
+### LOG_LEVEL 行為表
+
+| LOG_LEVEL | 啟動 banner | 模型列表 | 每個請求 `[GRAVITY]` 有廣告 | 每個請求 `[GRAVITY]` 無廣告 | 錯誤訊息 |
+|-----------|------------|----------|---------------------------|---------------------------|----------|
+| `debug` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `info` | ✅ | ✅ | ✅ | ❌ | ✅ |
+| `warn` | ✅ | ✅ | ✅ | ❌ | ✅ + 警告 |
+| `error` | ✅ | ✅ | ❌ | ❌ | 只顯示錯誤 |
+| `silent` | ❌ | ❌ | ❌ | ❌ | ❌（完全靜默） |
 | `KEYS_FILE` | `./api-keys.json` | API Keys 檔案路徑 |
 | `MASK_KEYS` | `0` | `1` = 啟動時遮罩印出的 keys |
 | `GRAVITY_PIXEL_ID` | `6cd74804-0541-4d9b-899d-d7fceb465b6f` | Gravity 像素 ID，與 free-pi-cli 相同，一般無需修改 |
