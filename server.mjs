@@ -165,10 +165,16 @@ function fpId(prefix) {
 }
 
 // ── free-pi upstream configuration ─────────────────────────────────
-// Base URL: default https://api.freepi.ai, overridable via FREEPI_BASE_URL
-const FREEPI_BASE_URL = process.env.FREEPI_BASE_URL || "https://api.freepi.ai";
+// Base URL: default https://api.freepi.ai, overridable via FREEPI_BASE_URL.
+// Resolved on each call (not cached) so tests and runtime overrides of
+// process.env.FREEPI_BASE_URL take effect immediately.
+const DEFAULT_FREEPI_BASE_URL = "https://api.freepi.ai";
+function freepiBaseUrl() {
+  return process.env.FREEPI_BASE_URL || DEFAULT_FREEPI_BASE_URL;
+}
 function freepiUrl(pathname) {
-  const base = FREEPI_BASE_URL.endsWith("/") ? FREEPI_BASE_URL : `${FREEPI_BASE_URL}/`;
+  const raw = freepiBaseUrl();
+  const base = raw.endsWith("/") ? raw : `${raw}/`;
   return new URL(String(pathname).replace(/^\//, ""), base).toString();
 }
 
@@ -230,6 +236,7 @@ function userIdFromJwt(jwt) {
 // 初始化 Gravity pixel（啟動時調用一次）
 async function initGravityPixel(jwt) {
   try {
+    if (process.env.GRAVITY_DISABLE_PIXEL === "1") return;
     const userId = userIdFromJwt(jwt);
     if (!userId) {
       log("warn", "[GRAVITY] Cannot extract userId from JWT, skipping pixel init");
@@ -883,6 +890,7 @@ async function freepiFetchWithRetry(opts, body, controller) {
     await sleep(wait);
     if (controller.signal.aborted) return res;
   }
+}
 
 // ── 獲取 free-pi 上游額度資訊（GET /me）──────────────────────────────
 async function getFreepiQuota() {
@@ -2245,7 +2253,8 @@ function sendRouteError(res, e, anthropicShape = false) {
 }
 
 // ── Routes: OpenAI format ──────────────────────────────────────────
-app.get("/v1/models", (_req, res) => {
+app.get("/v1/models", (req, res) => {
+  if (!auth(req)) return res.status(401).json({ error: { message: "Invalid API key" } });
   res.json({
     object: "list",
     data: MODELS.map((id) => {
@@ -2536,7 +2545,6 @@ if (isMainModule()) {
     process.exit(1);
   });
 }
-
 export {
   app,
   main,

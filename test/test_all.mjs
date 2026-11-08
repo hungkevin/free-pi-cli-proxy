@@ -1,6 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "http";
+import crypto from "node:crypto";
 
 // Import server internals for testing
 import {
@@ -35,6 +36,7 @@ import {
   RETRY_429_CAP_MS,
   freepiSessionId,
   getSession,
+  loadFreepiJwt,
 } from "../server.mjs";
 
 // ── Mock upstream server ────────────────────────────────────────────
@@ -216,6 +218,10 @@ describe("free-pi-cli-proxy", () => {
     process.env.LOG_LEVEL = "silent";
     process.env.PROXY_PORT = String(TEST_PORT);
     process.env.SESSION_TTL_MS = "0"; // Disable session reuse for tests
+    process.env.GRAVITY_DISABLE_PIXEL = "1"; // Keep tests offline
+
+    // Load the mock JWT from the env vars set above (validates against /me)
+    await loadFreepiJwt();
 
     // Generate test API key
     setApiKeys({ "test-user": TEST_API_KEY });
@@ -294,12 +300,13 @@ describe("free-pi-cli-proxy", () => {
     });
 
     it("validateAnthropicBody validates messages", () => {
-      assert.equal(validateAnthropicBody({}), "request body must be a JSON object");
+      assert.equal(validateAnthropicBody(null), "request body must be a JSON object");
+      assert.equal(validateAnthropicBody({}), "messages must be a non-empty array");
       assert.equal(validateAnthropicBody({ messages: [] }), "messages must be a non-empty array");
       assert.equal(validateAnthropicBody({ messages: [{ role: "user" }] }), "messages[0].content must be a string or an array of content blocks");
       assert.equal(validateAnthropicBody({ messages: [{ role: "user", content: "hello" }] }), null);
       assert.equal(validateAnthropicBody({ messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }] }), null);
-      assert.equal(validateAnthropicBody({ messages: [{ role: "user", content: [{ type: "image", source: {} }] }] }), "Unsupported content block type(s): image");
+      assert.ok(validateAnthropicBody({ messages: [{ role: "user", content: [{ type: "image", source: {} }] }] }).startsWith("Unsupported content block type(s): image"));
     });
 
     it("anthropicToOpenAI converts correctly", () => {
@@ -381,10 +388,11 @@ data: [DONE]
       assert.ok(r.json);
       assert.equal(r.json.id, "cmpl-1");
 
-      // SSE
-      r = coerceChatSyncBody('data: {"id":"cmpl-2"}\n\ndata: [DONE]\n\n');
+      // SSE (frames without choices are usage/cost-only and not aggregated)
+      r = coerceChatSyncBody('data: {"id":"cmpl-2","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
       assert.ok(r.json);
       assert.equal(r.json.id, "cmpl-2");
+      assert.equal(r.json.choices[0].message.content, "hi");
 
       // Error in SSE
       r = coerceChatSyncBody('data: {"error":{"message":"oops"}}\n\ndata: [DONE]\n\n');
@@ -552,7 +560,16 @@ data: [DONE]
       assert.ok(headers.get("content-type")?.includes("text/event-stream"));
       assert.ok(data.includes("data:"));
       assert.ok(data.includes("[DONE]"));
-      assert.ok(data.includes("Hello from mock upstream"));
+      // The mock streams one character per frame, so join deltas before matching.
+      const deltas = data
+        .split("\n")
+        .filter((l) => l.startsWith("data:"))
+        .map((l) => l.slice(5).trim())
+        .filter((p) => p && p !== "[DONE]")
+        .map((p) => JSON.parse(p))
+        .map((p) => p.choices?.[0]?.delta?.content || "")
+        .join("");
+      assert.equal(deltas, "Hello from mock upstream!");
     });
 
     it("x-session-id reuses upstream session", async () => {

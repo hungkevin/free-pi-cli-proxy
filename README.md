@@ -292,7 +292,7 @@ bun test/test_chat_stream.mjs
 bun server.mjs
 # 另開終端機：
 curl http://127.0.0.1:6447/health
-curl http://127.0.0.1:6447/v1/models
+curl http://127.0.0.1:6447/v1/models -H "Authorization: Bearer fp-xxx"
 ```
 
 ## 多帳號輪流使用（備註）
