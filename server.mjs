@@ -836,6 +836,9 @@ function setFreepiFetchImpl(fn) {
   freepiFetchImpl = fn;
 }
 
+// 儲存最後一次獲取的配額資訊（用於 429 錯誤時顯示更多細節）
+let lastQuotaInfo = null;
+
 async function freepiFetchWithRetry(opts, body, controller) {
   let lastRes = null;
   let sessionResetTried = false;
@@ -868,6 +871,8 @@ async function freepiFetchWithRetry(opts, body, controller) {
     if (isHardQuotaWait(retryAfterMs)) {
       const mins = Math.round(retryAfterMs / 60000);
       log("error", `[FREEPI 429 DAILY QUOTA] free quota exhausted; resets in ~${mins} min — not retrying`);
+      // 同時獲取配額資訊，以便在錯誤回應中顯示
+      lastQuotaInfo = await getFreepiQuota();
       return res;
     }
     const wait = retryDelay(attempt, retryAfterMs);
@@ -875,6 +880,33 @@ async function freepiFetchWithRetry(opts, body, controller) {
     try { await res.arrayBuffer(); } catch {}
     await sleep(wait);
     if (controller.signal.aborted) return res;
+  }
+}
+
+// ── 獲取 free-pi 上游額度資訊（GET /me）──────────────────────────────
+async function getFreepiQuota() {
+  if (!freepiJwt) return null;
+  try {
+    const res = await fetch(freepiUrl("/me"), {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${freepiJwt}`,
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return {
+      remaining_usd_today: data.remaining_usd_today,
+      lane: data.lane,
+      remaining: data.remaining,
+      total: data.total,
+      updated_at: new Date().toISOString(),
+    };
+  } catch (e) {
+    log("warn", `[AUTH] Failed to fetch free-pi quota: ${e?.message || e}`);
+    return null;
   }
 }
 
@@ -1072,6 +1104,23 @@ function sendUpstreamError(res, status, raw, zenHeaders, shape = "openai") {
     if (retryAfter) res.setHeader("Retry-After", retryAfter);
   }
   if (res.headersSent) return;
+
+  // 429 錯誤時，嘗試附加配額資訊
+  if (status === 429 && lastQuotaInfo) {
+    error.quota_info = lastQuotaInfo;
+    // 根據配額狀態給出更明確的訊息
+    const remaining = lastQuotaInfo.remaining_usd_today ?? lastQuotaInfo.remaining;
+    const total = lastQuotaInfo.total;
+    if (remaining !== undefined) {
+      const pct = total && total > 0 ? Math.round((remaining / total) * 100) : 0;
+      if (pct <= 0) {
+        error.message += ` (free quota exhausted — reset at UTC midnight ~7:00 PM ET)`;
+      } else if (pct <= 10) {
+        error.message += ` (quota critically low: ~${pct}% remaining)`;
+      }
+    }
+  }
+
   const body = shape === "anthropic"
     ? { type: "error", error: { type: error.type, message: error.message } }
     : { error };
@@ -2356,18 +2405,23 @@ app.post("/v1/messages", async (req, res) => {
 });
 
 // ── Health ──────────────────────────────────────────────────────────
-app.get("/health", (_req, res) => res.json({
-  status: "ok",
-  version: `v${PROXY_VERSION}`,
-  runtime: RUNTIME,
-  models: MODELS.length,
-  models_source: MODELS_ORIGIN,
-  models_loaded_at: MODELS_LOADED_AT,
-  upstream_auth: freepiJwtSource,
-  client_version: FREEPI_CLIENT_VERSION,
-  session_ttl_ms: SESSION_TTL_MS,
-  endpoints: ["/v1/chat/completions", "/v1/messages", "/v1/models"],
-}));
+app.get("/health", async (_req, res) => {
+  const quota = await getFreepiQuota();
+  const health = {
+    status: "ok",
+    version: `v${PROXY_VERSION}`,
+    runtime: RUNTIME,
+    models: MODELS.length,
+    models_source: MODELS_ORIGIN,
+    models_loaded_at: MODELS_LOADED_AT,
+    upstream_auth: freepiJwtSource,
+    client_version: FREEPI_CLIENT_VERSION,
+    session_ttl_ms: SESSION_TTL_MS,
+    quota: quota || null,
+    endpoints: ["/v1/chat/completions", "/v1/messages", "/v1/models"],
+  };
+  res.json(health);
+});
 
 // Body-parser errors → JSON in the client's shape
 app.use((err, req, res, _next) => {
