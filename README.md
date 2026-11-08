@@ -220,8 +220,9 @@ curl -N -X POST http://127.0.0.1:6447/v1/chat/completions \
 | `GRAVITY_PIXEL_ID` | `6cd74804-0541-4d9b-899d-d7fceb465b6f` | Gravity 像素 ID，與 free-pi-cli 相同，一般無需修改 |
 | `GRAVITY_STORAGE_DIR` | `~/.free-pi/gravity` | Gravity 儲存目錄 |
 | `GRAVITY_DISABLE_PIXEL` | `0` | `1` = 停用 Gravity pixel（但可能導致 403 廣告錯誤） |
+| `AD_REFRESH_MS` | `600000` | 廣告刷新間隔（毫秒），預設 600000ms = 10 分鐘 |
 
-> ⚠️ **廣告廣告**：proxy 會自動初始化 Gravity pixel 建立 session，讓上游知道帳號「已看廣告」。
+> ⚠️ **廣告展示**：proxy 會自動初始化 Gravity pixel 並自動獲取/展示廣告（GET /ads/next + GET imp_url + POST /ads/impression）。
 > **不需要執行 `npx free-pi-cli@latest` 來看廣告。** proxy 會在背景處理廣告追蹤，不顯示廣告卡片。
 
 > ⚠️ **版本閘門**：上游目前要求 `x-client-version` ≥ `0.6.2`。

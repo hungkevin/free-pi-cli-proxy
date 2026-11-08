@@ -44,13 +44,32 @@
 `FREEPI_AUTO_LOGIN=1`：啟動時若找不到 JWT，自動走 GitHub device flow 登入（需互動式 TTY）
 `FREEPI_WRITE_JWT_TO_ENV=1`：登入成功後自動將 JWT 寫回 `.env`（預設開啟）
 
-## 3. Gravity 廣告像素（免執行 `npx free-pi-cli@latest`）
-- 啟動時自動初始化 `@gravity-ai/api` 的 `gravityPixel`，建立廣告 session
-- 讓上游知道帳號「已看廣告」，避免 `403 Ads aren't showing for this account` 錯誤
-- 不顯示廣告卡片，只在背景建立 session
-- 請求時自動加入 `x-gravity-context` header
-- 上游回應若有廣告相關 header，log 會提示 `[GRAVITY AD] ... — ad received from upstream`
-- `GRAVITY_DISABLE_PIXEL=1` 可停用（但可能導致 403 廣告錯誤）
+## 3. Gravity 廣告機制（完全自動化，免執行 npx free-pi-cli@latest）
+
+### 廣告機制的三個層次（從 free-pi-cli 原始碼分析）
+
+| 層次 | 檔案 | 作用 | Proxy 是否實作 |
+|------|------|------|---------------|
+| **Gravity Pixel** | `src/gravity-pixel.ts` | 建立與 Gravity 廣告網路的 session，獲取 sessionId | ✅ 已實作 |
+| **廣告獲取** | `src/vendor/pi-ads/api.ts` | `GET /ads/next?slot=banner` 獲取廣告 | ✅ 已實作 |
+| **廣告展示上報** | `src/vendor/pi-ads/banner.ts` | 觸發 Gravity 展示像素 URL，POST /ads/impression 上報 | ✅ 已實作 |
+
+### 廣告流程（完全自動化）
+
+1. **啟動時**：自動調用 `GET /ads/next?slot=banner` 獲取廣告
+2. **展示像素**：`GET ad.imp_url`（fire-and-forget，觸發 Gravity 像素）
+3. **上報展示**：`POST /ads/impression`（`{ ad_id, click_token, imp_fired: true }`）
+4. **背景刷新**：每 `AD_REFRESH_MS` 毫秒（預設 600,000ms = 10 分鐘）重複上述流程
+
+上游伺服器檢查「廣告展示記錄」，而不只是「有 gravity session」。實作完整展示流程後，proxy 可以完全免執行 `npx free-pi-cli@latest`。
+
+### 環境變數
+- `GRAVITY_PIXEL_ID`：Gravity 像素 ID（預設 `6cd74804-0541-4d9b-899d-d7fceb465b6f`，與 free-pi-cli 相同）
+- `GRAVITY_STORAGE_DIR`：Gravity 儲存目錄（預設 `~/.free-pi/gravity`）
+- `GRAVITY_DISABLE_PIXEL=1`：停用 Gravity pixel（可能導致 403 廣告錯誤）
+- `AD_REFRESH_MS`：廣告刷新間隔（預設 600000ms = 10 分鐘）
+
+─────────────────────────────────────────────────────────────────────────────
 
 ## 4. 模型清單（從 /client-version）
 - 啟動時 `GET {FREEPI_BASE_URL}/client-version`（10s 超時，失敗 fail-open 到內建 DEFAULT_MODELS）
@@ -105,6 +124,7 @@
 | `RETRY_429_BASE_MS` | `2000` | 基礎退避時間（毫秒） |
 | `RETRY_429_CAP_MS` | `30000` | 單次退避上限（毫秒） |
 | `RETRY_429_HARD_LIMIT_MS` | `300000` | 超過此值（5 分鐘）視為日額度用盡，快速失敗 |
+| `AD_REFRESH_MS` | `600000` | 廣告刷新間隔（毫秒），預設 600000ms = 10 分鐘 |
 
 ─────────────────────────────────────────────────────────────────────────────
 ## Session 自動重置（避免 409 session 限制錯誤）
@@ -169,13 +189,13 @@ node test/mock_server.mjs   # 啟動假上游（另一個終端機）
 - 不要修改 `C:\work\free-pi-cli\`（唯讀參考）與 `C:\work\opencode-free-proxy\`（唯讀參考）。
 - 不要把 JWT 寫進 log（遮罩）。
 - 上游 host 只有 api.freepi.ai 一個來源，不要引入第三方中轉。
-- 廣告處理：proxy 自動初始化 Gravity pixel，不顯示廣告卡片，**不需要**執行 `npx free-pi-cli@latest`。
+- 廣告處理：proxy 自動初始化 Gravity pixel 並自動獲取/展示廣告，不顯示廣告卡片，**不需要**執行 `npx free-pi-cli@latest`。
 
 ─────────────────────────────────────────────────────────────────────────────
 # 已知限制
 
 - 上游每個帳號最多 4 個並行 CLI session。若收到 `You've already got 4 free-pi CLI sessions running`，請等待過期 session 自動釋放，或執行 `/close-other-session` 釋放。
-- 若上游回 `Ads aren't showing for this account`，表示廣告 session 未建立，請確認 Gravity pixel 未被停用（`GRAVITY_DISABLE_PIXEL` 不應為 1）。
+- 若上游回 `Ads aren't showing for this account`，表示廣告展示未成功，請確認 Gravity pixel 未被停用（`GRAVITY_DISABLE_PIXEL` 不應為 1），或稍後重試。
 
 ─────────────────────────────────────────────────────────────────────────────
 # 目錄結構
