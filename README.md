@@ -92,7 +92,7 @@ npx free-pi-cli    # 完成 GitHub device flow
 bun server.mjs
 
 # 或用常駐腳本（自動重啟、log 輪替、僅顯示 warn 以上）
-# Windows:
+# Windows: 在自己的命令列視窗執行（關閉視窗即停止），崩潰後 5 秒自動重啟
 start.bat
 
 # Linux/macOS:
