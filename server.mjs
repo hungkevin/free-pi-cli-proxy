@@ -2420,11 +2420,11 @@ function isMainModule() {
 async function main() {
   // Resolve client version: CLI param > env (.env) > default
   FREEPI_CLIENT_VERSION = resolveClientVersion(process.argv.slice(2));
-  console.log(`[AUTH] Client version set to: ${FREEPI_CLIENT_VERSION}`);
   loadKeys();
   await loadFreepiJwt();
   await loadModels();
   if (LOG_LEVEL !== "silent") {
+    console.log(`[AUTH] Client version set to: ${FREEPI_CLIENT_VERSION}`);
     printModels();
   }
   const server = app.listen(PORT, HOST, () => {
