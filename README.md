@@ -68,6 +68,32 @@ $env:FREEPI_AUTO_LOGIN="1"; bun server.mjs
 
 登入成功後，JWT 會同時寫入 `~/.free-pi/agent/credentials.json` 與 `.env` 檔案。下次啟動即可直接從 `.env` 讀取 `FREEPI_JWT`，無需再次登入。
 
+#### 方式 D：多帳號輪流（Multi-account rotation，避免 hourly limit）
+
+free-pi.ai 對每個 GitHub 帳號有每小時請求上限（hourly limit）與每日免費額度（daily quota）。若單一帳號額度用完，proxy 會自動切換到下一個可用帳號，無需手動干預。
+
+```env
+# .env 中設定多個 JWT（來自不同 GitHub 帳號，逗號分隔）
+FREEPI_JWT_LIST=eyJhbGci…帳號A,eyJhbGci…帳號B,eyJhbGci…帳號C
+```
+
+行為說明：
+- 啟動時會驗證所有 JWT，抓取每個帳號的 `/me` 額度資訊
+- 預設使用剩餘額度最高的帳號
+- 收到 `429 rate_limit_exceeded`（每小時限制）時，標記該帳號為 rate_limited，立即切換到下一個 active 帳號重試
+- 收到 `429 creditlimitexceeded` / `insufficient_quota`（每日額度用完）時，標記該帳號為 exhausted，切換到下一個帳號
+- 所有帳號皆不可用時，才會將 429 錯誤回傳給客戶端
+- `/health` 端點會顯示所有帳號的狀態與剩餘額度
+
+範例 `.env`：
+```env
+FREEPI_JWT_LIST=eyJhbGci…JWT_A,eyJhbGci…JWT_B
+FREEPI_CLIENT_VERSION=0.6.14
+LOG_LEVEL=warn
+```
+
+> ⚠️ 這需要 **不同的 GitHub 帳號** 各自登入取得 JWT。同一個 GitHub 帳號的多個 JWT 共享同一個額度與限制，無法透過多 JWT 繞過。
+
 #### 方式 B：環境變數直接給（推薦部署/容器用）
 
 ```bash
@@ -205,7 +231,8 @@ curl -N -X POST http://127.0.0.1:6447/v1/chat/completions \
 
 | 變數 | 預設 | 說明 |
 |------|------|------|
-| `FREEPI_JWT` | - | free-pi JWT，直接提供 |
+| `FREEPI_JWT` | - | 單一 free-pi JWT，直接提供（向後相容） |
+| `FREEPI_JWT_LIST` | - | 多個 JWT（逗號分隔，來自不同 GitHub 帳號），支援自動輪替。例：`FREEPI_JWT_LIST=jwt1,jwt2,jwt3` |
 | `FREEPI_AUTO_LOGIN` | `0` | `1` = 啟動時找不到 JWT 就自動走 GitHub device flow 登入（需 TTY）。登入成功後，JWT 會同時寫入 `~/.free-pi/agent/credentials.json` 與 `.env` |
 | `FREEPI_WRITE_JWT_TO_ENV` | `1` | `1` = 從 device flow 取得 JWT 後，自動寫入 `.env` 檔案；`0` = 僅寫入 credentials.json |
 | `FREEPI_BASE_URL` | `https://api.freepi.ai` | 上游 Base URL |

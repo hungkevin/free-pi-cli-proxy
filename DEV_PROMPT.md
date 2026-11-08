@@ -36,13 +36,22 @@
 - `MASK_KEYS=1` 可遮罩啟動時印出的 key
 
 ## 2. JWT 認證（上游 free-pi.ai）
-三種取得方式（優先順序：命令列參數 > 環境變數/.env > credentials 檔）：
-1. `FREEPI_JWT` 環境變數（直接給，推薦部署/容器）
-2. `~/.free-pi/agent/credentials.json`（free-pi-cli 登入產生）
-3. `bun login.mjs`（本專案內建 GitHub device flow，免安裝 free-pi-cli）
+支援單一與多帳號 JWT 輪替（Multi-account Rotation）：
+
+取得方式（優先順序：命令列參數 > 環境變數/.env > credentials 檔）：
+1. `FREEPI_JWT_LIST` 環境變數（多個 JWT，逗號分隔，來自不同 GitHub 帳號；支援自動輪替）
+2. `FREEPI_JWT` 環境變數（單一 JWT，推薦部署/容器）
+3. `~/.free-pi/agent/credentials.json`（free-pi-cli 登入產生）
+4. `bun login.mjs`（本專案內建 GitHub device flow，免安裝 free-pi-cli）
 
 `FREEPI_AUTO_LOGIN=1`：啟動時若找不到 JWT，自動走 GitHub device flow 登入（需互動式 TTY）
 `FREEPI_WRITE_JWT_TO_ENV=1`：登入成功後自動將 JWT 寫回 `.env`（預設開啟）
+
+多帳號輪替行為：
+- 啟動時驗證所有 JWT，選擇剩餘額度最高的 active 帳號
+- 收到 429 rate_limit_exceeded（每小時限制）時，標記該帳號並立即切換到下一個 active 帳號
+- 收到 429 creditlimitexceeded / insufficient_quota（每日額度用完）時，標記該帳號並切換到下一個帳號
+- `/health` 端點顯示所有帳號狀態與剩餘額度
 
 ## 3. Gravity 廣告機制（完全自動化，免執行 npx free-pi-cli@latest）
 
@@ -89,7 +98,7 @@
 - tool_use / tool_result 區塊轉換
 
 ## 7. 健康檢查
-- `GET /health`：status、version、runtime、models 數、models_source、models_loaded_at、upstream_auth、client_version、session_ttl_ms、**quota**（remaining_credits_today / allowance_credits / cap_usd_today / lane / tier 等）、endpoints 清單
+- `GET /health`：status、version、runtime、models 數、models_source、models_loaded_at、upstream_auth、client_version、session_ttl_ms、**currentAccount**、**currentAccountLabel**、**quota**（當前帳號）、**accounts**（所有帳號狀態與額度）、endpoints 清單
 
 ## 8. Session 映射
 - 依 API key + 可選 `x-session-id` header 復用上游 session id
@@ -106,7 +115,8 @@
 
 | 變數 | 預設 | 說明 |
 |------|------|------|
-| `FREEPI_JWT` | - | free-pi JWT，直接提供 |
+| `FREEPI_JWT` | - | 單一 free-pi JWT（向後相容） |
+| `FREEPI_JWT_LIST` | - | 多個 JWT（逗號分隔，來自不同 GitHub 帳號，支援自動輪替） |
 | `FREEPI_AUTO_LOGIN` | `0` | `1` = 啟動時找不到 JWT 就自動走 GitHub device flow（需 TTY） |
 | `FREEPI_WRITE_JWT_TO_ENV` | `1` | `1` = 登入後自動寫回 `.env` |
 | `FREEPI_BASE_URL` | `https://api.freepi.ai` | 上游 Base URL |

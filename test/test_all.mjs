@@ -36,7 +36,7 @@ import {
   RETRY_429_CAP_MS,
   freepiSessionId,
   getSession,
-  loadFreepiJwt,
+  loadFreepiAccounts,
 } from "../server.mjs";
 
 // ── Mock upstream server ────────────────────────────────────────────
@@ -211,17 +211,17 @@ describe("free-pi-cli-proxy", () => {
     // Start mock upstream
     await startMockServer();
 
-    // Configure proxy to use mock upstream
+    // Configure proxy to use mock upstream with multiple test JWTs (multi-account)
     process.env.FREEPI_BASE_URL = MOCK_BASE;
-    process.env.FREEPI_JWT = mockJwt;
+    process.env.FREEPI_JWT_LIST = `${mockJwt},${mockJwt}-backup`;
     process.env.FREEPI_CLIENT_VERSION = "0.4.10";
     process.env.LOG_LEVEL = "silent";
     process.env.PROXY_PORT = String(TEST_PORT);
     process.env.SESSION_TTL_MS = "0"; // Disable session reuse for tests
     process.env.GRAVITY_DISABLE_PIXEL = "1"; // Keep tests offline
 
-    // Load the mock JWT from the env vars set above (validates against /me)
-    await loadFreepiJwt();
+    // Load the mock JWTs from the env vars set above (validates against /me)
+    await loadFreepiAccounts();
 
     // Generate test API key
     setApiKeys({ "test-user": TEST_API_KEY });

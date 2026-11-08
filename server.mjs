@@ -301,8 +301,9 @@ const AD_REFRESH_MS = envInt("AD_REFRESH_MS", 600000);
 
 // ── 廣告請求 headers（與 freepiHeaders 類似，但針對 /ads/* 端點）──
 function adHeaders() {
+  const jwt = getCurrentAccountJwt();
   const headers = {
-    "Authorization": `Bearer ${freepiJwt}`,
+    "Authorization": `Bearer ${jwt}`,
     "Content-Type": "application/json",
   };
   const gravityCtx = getGravityContextHeader();
@@ -314,7 +315,7 @@ function adHeaders() {
 
 // ── 1. GET /ads/next?slot=banner ────────────────────────────────────
 async function fetchAdNext() {
-  if (!freepiJwt) return null;
+  if (!getCurrentAccountJwt()) return null;
   try {
     const res = await fetch(freepiUrl(`/ads/next?slot=banner`), {
       method: "GET",
@@ -383,7 +384,7 @@ async function postImpression(ad) {
 
 // ── 完整廣告展示流程（1. 獲取 2. 顯示像素 3. 上報）──────────────────
 async function showAd() {
-  if (!freepiJwt) return;
+  if (!getCurrentAccountJwt()) return;
   const ad = await fetchAdNext();
   if (!ad) return;
   // 並行發送展示像素與上報（兩者都是 fire-and-forget 性質）
@@ -392,18 +393,45 @@ async function showAd() {
 
 // 背景定時刷新廣告
 setInterval(async () => {
-  if (freepiJwt) await showAd();
+  if (getCurrentAccountJwt()) await showAd();
 }, AD_REFRESH_MS).unref?.();
 
 // 初始化廣告（在 JWT 載入後調用）
 async function initAds() {
-  if (!freepiJwt || process.env.GRAVITY_DISABLE_PIXEL === "1") return;
+  if (!getCurrentAccountJwt() || process.env.GRAVITY_DISABLE_PIXEL === "1") return;
   await showAd();
 }
 
-// ── Load free-pi JWT ───────────────────────────────────────────────
-// Priority: FREEPI_JWT env var > credentials file (~/.free-pi/agent/credentials.json)
-let freepiJwt = null;
+// ── Load free-pi JWT (multi-account rotation) ─────────────────────────────
+// Support multiple free-pi accounts (different GitHub accounts) for automatic
+// rotation when one account hits its hourly/daily limit.
+//
+// Priority of JWT sources:
+// 1. FREEPI_JWT_LIST env var (comma-separated JWTs from different GitHub accounts)
+// 2. FREEPI_JWT env var (single JWT, backward compatible)
+// 3. ~/.free-pi/agent/credentials.json (free-pi-cli compatible, single JWT)
+// 4. FREEPI_AUTO_LOGIN=1 device flow (interactive TTY only)
+class FreepiAccount {
+  constructor(jwt, label, index) {
+    this.jwt = jwt;
+    this.label = label || `account-${index + 1}`;
+    this.index = index;
+    // status: active | rate_limited | exhausted | invalid
+    this.status = "active";
+    this.remainingCredits = null;
+    this.allowanceCredits = null;
+    this.capUsdToday = null;
+    this.lane = null;
+    this.tier = null;
+    this.lastChecked = null;
+    this.hourlyLimitResetAt = null;
+    this.dailyLimitResetAt = null;
+    this.consecutiveFailures = 0;
+  }
+}
+
+let freepiAccounts = [];
+let currentAccountIndex = -1; // -1 = not initialized
 let freepiJwtSource = "none";
 
 function getFreePiCredentialsPath() {
@@ -414,7 +442,7 @@ function getFreePiCredentialsPath() {
   return path.join(homedir(), ".free-pi", "agent", "credentials.json");
 }
 
-// 驗證 JWT 是否有效（GET /me）
+// 驗證單一 JWT 是否有效（GET /me）
 async function verifyFreepiJwt(jwt) {
   try {
     const res = await fetch(freepiUrl("/me"), {
@@ -429,9 +457,27 @@ async function verifyFreepiJwt(jwt) {
   }
 }
 
-// 將 JWT 寫入 credentials.json 與 .env
+// 驗證單一 JWT 並回傳 /me 的完整資料（用於查帳號額度）
+async function fetchFreepiMe(jwt) {
+  try {
+    const res = await fetch(freepiUrl("/me"), {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${jwt}`,
+        "Content-Type": "application/json",
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+// 將單一 JWT 寫入 credentials.json 與 .env（供 login.mjs / device flow 使用）
 function saveFreepiJwt(jwt) {
-  // 寫入 credentials.json
+  // 寫入 credentials.json（free-pi-cli 相容格式，僅單一 token）
   const credPath = getFreePiCredentialsPath();
   try {
     fs.mkdirSync(path.dirname(credPath), { recursive: true });
@@ -445,82 +491,257 @@ function saveFreepiJwt(jwt) {
   writeJwtToEnvFile(jwt);
 }
 
-async function loadFreepiJwt() {
-  // 1. Try env var first
-  if (process.env.FREEPI_JWT && process.env.FREEPI_JWT.trim()) {
-    freepiJwt = process.env.FREEPI_JWT.trim();
-    freepiJwtSource = "env";
-    log("info", "[AUTH] Using JWT from FREEPI_JWT environment variable");
-    const valid = await verifyFreepiJwt(freepiJwt);
-    if (!valid) {
-      log("warn", "[AUTH] FREEPI_JWT 無效，將嘗試重新登入");
-      freepiJwt = null;
-    } else {
-      await initGravityPixel(freepiJwt);
-      await initAds();
-      await releaseSessionAtStartup();
-      return;
-    }
-  }
+// 解析 FREEPI_JWT_LIST 環境變數（逗號分隔，來自不同 GitHub 帳號）
+function parseFreepiJwtList() {
+  const raw = process.env.FREEPI_JWT_LIST || "";
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
 
-  // 2. Try credentials file
-  const credPath = getFreePiCredentialsPath();
+// 取得目前啟用的 JWT 列表（從 env 優先， fallback 到 credentials.json）
+function getConfiguredJwts() {
+  // 1. FREEPI_JWT_LIST（多帳號）
+  const list = parseFreepiJwtList();
+  if (list.length > 0) return list;
+
+  // 2. FREEPI_JWT（單一，向後相容）
+  const single = process.env.FREEPI_JWT;
+  if (single && single.trim()) return [single.trim()];
+
+  // 3. credentials.json（free-pi-cli 相容，單一）
   try {
-    const raw = await fs.promises.readFile(credPath, "utf8");
+    const credPath = getFreePiCredentialsPath();
+    const raw = fs.readFileSync(credPath, "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed.token === "string" && parsed.token.length > 0) {
-      freepiJwt = parsed.token;
-      freepiJwtSource = "file";
-      log("info", `[AUTH] Loaded JWT from ${credPath}`);
-      const valid = await verifyFreepiJwt(freepiJwt);
-      if (!valid) {
-        log("warn", `[AUTH] 儲存的 JWT 無效，將嘗試重新登入`);
-        freepiJwt = null;
+      return [parsed.token];
+    }
+  } catch {
+    // 不存在或格式錯誤，忽略
+  }
+  return [];
+}
+
+async function loadFreepiAccounts() {
+  const configuredJwts = getConfiguredJwts();
+  if (configuredJwts.length === 0) {
+    // No JWT configured — try auto-login if enabled
+    if (ENV_AUTO_LOGIN) {
+      if (!process.stdin.isTTY) {
+        console.error("[AUTH] FREEPI_AUTO_LOGIN=1 需要互動式終端機（stdin 非 TTY）。");
+        console.error("[AUTH] 請先於終端機執行 `bun login.mjs`，或設定 FREEPI_JWT / FREEPI_JWT_LIST 環境變數。");
       } else {
-        // 將 credentials.json 中的 JWT 同步寫入 .env，方便下次直接讀取
-        writeJwtToEnvFile(freepiJwt);
-        await initGravityPixel(freepiJwt);
-        await initAds();
-        await releaseSessionAtStartup();
-        return;
+        try {
+          log("info", "[AUTH] 找不到 JWT，開始 GitHub device flow 登入…");
+          const jwt = await deviceFlowLogin();
+          saveFreepiJwt(jwt);
+          log("info", "[AUTH] GitHub 登入成功，JWT 已寫入 " + getFreePiCredentialsPath() + " 與 .env");
+          await initializeAccountsFromJwts([jwt], "device-flow");
+          return;
+        } catch (e) {
+          console.error("[AUTH] device flow 登入失敗：" + (e?.message || e));
+        }
       }
     }
-  } catch (e) {
-    // File doesn't exist or invalid JSON
+    // Not found - fail with clear guidance
+    console.error("[FATAL] free-pi JWT not found. Provide one of:");
+    console.error("  1. Set FREEPI_JWT environment variable (export FREEPI_JWT=...)");
+    console.error("  2. Set FREEPI_JWT_LIST environment variable (comma-separated JWTs from different GitHub accounts)");
+    console.error("  3. Run this project's own login:  bun login.mjs");
+    console.error("     (同一個 GitHub device flow，免安裝 free-pi-cli)");
+    console.error("  4. Or start with FREEPI_AUTO_LOGIN=1 to log in from this process");
+    console.error("     (JWT will be saved to both credentials.json and .env)");
+    console.error("  5. Or run `npx free-pi-cli@latest` once to log in via GitHub device flow");
+    console.error("     (this creates ~/.free-pi/agent/credentials.json)");
+    process.exit(1);
   }
 
-  // 3. 可選：proxy 自行走 GitHub device flow 取得 JWT（等同 login.mjs）
-  //    FREEPI_AUTO_LOGIN=1 開啟；需要互動式 TTY 才能顯示同意條款並等待授權。
-  if (ENV_AUTO_LOGIN) {
-    if (!process.stdin.isTTY) {
-      console.error("[AUTH] FREEPI_AUTO_LOGIN=1 需要互動式終端機（stdin 非 TTY）。");
-      console.error("[AUTH] 請先於終端機執行 `bun login.mjs`，或改用 FREEPI_JWT 環境變數。");
-    } else {
-      try {
-        log("info", "[AUTH] 找不到 JWT，開始 GitHub device flow 登入…");
-        freepiJwt = await deviceFlowLogin();
-        freepiJwtSource = "device-flow";
-        log("info", "[AUTH] GitHub 登入成功，JWT 已寫入 " + getFreePiCredentialsPath() + " 與 .env");
-        await initGravityPixel(freepiJwt);
-        await initAds();
-        await releaseSessionAtStartup();
-        return;
-      } catch (e) {
-        console.error("[AUTH] device flow 登入失敗：" + (e?.message || e));
+  await initializeAccountsFromJwts(configuredJwts, configuredJwts.length > 1 ? "env-list" : "env");
+}
+
+// 從 JWT 陣列初始化帳號列表：驗證每個 JWT、抓取額度、選擇最佳帳號
+async function initializeAccountsFromJwts(jwts, source) {
+  freepiAccounts = [];
+  let validCount = 0;
+
+  for (let i = 0; i < jwts.length; i++) {
+    const jwt = jwts[i];
+    const account = new FreepiAccount(jwt, `account-${i + 1}`, i);
+
+    const valid = await verifyFreepiJwt(jwt);
+    if (!valid) {
+      account.status = "invalid";
+      log("warn", `[AUTH] JWT #${i + 1} (${maskJwt(jwt)}) 無效，已標記為 invalid`);
+      freepiAccounts.push(account);
+      continue;
+    }
+
+    // 抓取 /me 額度資訊
+    const me = await fetchFreepiMe(jwt);
+    if (me) {
+      updateAccountQuota(account, me);
+      validCount++;
+    }
+
+    account.status = "active";
+    freepiAccounts.push(account);
+    log("info", `[AUTH] JWT #${i + 1} (${maskJwt(jwt)}) 有效 — ${account.label}, 剩餘額度: ${account.remainingCredits ?? "未知"}, lane: ${account.lane ?? "-"}`);
+  }
+
+  if (validCount === 0) {
+    console.error("[FATAL] 沒有有效的 free-pi JWT，請檢查 FREEPI_JWT / FREEPI_JWT_LIST");
+    process.exit(1);
+  }
+
+  freepiJwtSource = source;
+  currentAccountIndex = selectBestAccountIndex();
+
+  const cur = freepiAccounts[currentAccountIndex];
+  log("info", `[AUTH] 啟用帳號 #${currentAccountIndex + 1} (${cur.label}) 作為預設上游認證`);
+  await initGravityPixel(cur.jwt);
+  await initAds();
+  await releaseSessionAtStartup();
+}
+
+// 選擇最佳帳號索引：優先 active，剩餘額度最高者勝出
+function selectBestAccountIndex() {
+  let bestIdx = -1;
+  let bestCredits = -1;
+
+  for (let i = 0; i < freepiAccounts.length; i++) {
+    const acc = freepiAccounts[i];
+    if (acc.status !== "active") continue;
+    const credits = acc.remainingCredits ?? 0;
+    if (credits > bestCredits) {
+      bestCredits = credits;
+      bestIdx = i;
+    }
+  }
+
+  // 若沒有 active 帳號，嘗試恢復 rate_limited 帳號（hourly limit 可能已重置）
+  if (bestIdx === -1) {
+    const now = Date.now();
+    for (let i = 0; i < freepiAccounts.length; i++) {
+      const acc = freepiAccounts[i];
+      if (acc.status === "rate_limited" && acc.hourlyLimitResetAt && now >= acc.hourlyLimitResetAt) {
+        acc.status = "active";
+        acc.consecutiveFailures = 0;
+        log("info", `[AUTH] 帳號 #${i + 1} (${acc.label}) hourly limit 可能已重置，恢復為 active`);
+        bestIdx = i;
+        break;
       }
     }
   }
 
-  // 4. Not found - fail with clear guidance
-  console.error("[FATAL] free-pi JWT not found. Provide one of:");
-  console.error("  1. Set FREEPI_JWT environment variable (export FREEPI_JWT=...)");
-  console.error("  2. Run this project's own login:  bun login.mjs");
-  console.error("     (同一個 GitHub device flow，免安裝 free-pi-cli)");
-  console.error("  3. Or start with FREEPI_AUTO_LOGIN=1 to log in from this process");
-  console.error("     (JWT will be saved to both credentials.json and .env)");
-  console.error("  4. Or run `npx free-pi-cli@latest` once to log in via GitHub device flow");
-  console.error("     (this creates ~/.free-pi/agent/credentials.json)");
-  process.exit(1);
+  // 若仍無 active，嘗試恢復 exhausted 帳號（daily limit 可能已重置）
+  if (bestIdx === -1) {
+    const now = Date.now();
+    for (let i = 0; i < freepiAccounts.length; i++) {
+      const acc = freepiAccounts[i];
+      if (acc.status === "exhausted" && acc.dailyLimitResetAt && now >= acc.dailyLimitResetAt) {
+        acc.status = "active";
+        acc.consecutiveFailures = 0;
+        log("info", `[AUTH] 帳號 #${i + 1} (${acc.label}) daily quota 可能已重置，恢復為 active`);
+        bestIdx = i;
+        break;
+      }
+    }
+  }
+
+  return bestIdx;
+}
+
+// 取得當前啟用帳號的 JWT（供 freepiHeaders / freepiFetchRaw 使用）
+function getCurrentAccountJwt() {
+  if (currentAccountIndex < 0 || currentAccountIndex >= freepiAccounts.length) return null;
+  return freepiAccounts[currentAccountIndex].jwt;
+}
+
+// 切換到下一個可用帳號（用於 429 rate limit 後）
+function switchToNextAccount() {
+  if (freepiAccounts.length === 0) return false;
+
+  const startIdx = currentAccountIndex >= 0 ? currentAccountIndex : -1;
+  let nextIdx = (startIdx + 1) % freepiAccounts.length;
+
+  while (nextIdx !== startIdx) {
+    const acc = freepiAccounts[nextIdx];
+    if (acc.status === "active") {
+      currentAccountIndex = nextIdx;
+      log("warn", `[AUTH] 已切換到帳號 #${nextIdx + 1} (${acc.label})`);
+      return true;
+    }
+    nextIdx = (nextIdx + 1) % freepiAccounts.length;
+  }
+
+  // 沒有其他 active 帳號，嘗試恢復所有帳號
+  currentAccountIndex = selectBestAccountIndex();
+  return currentAccountIndex >= 0;
+}
+
+// 標記帳號為 rate_limited（hourly limit）
+function markAccountRateLimited(accountIndex) {
+  const acc = freepiAccounts[accountIndex];
+  if (!acc) return;
+  acc.status = "rate_limited";
+  acc.consecutiveFailures++;
+  // 預設 hourly limit 在整點重置，設為下一個整點
+  const now = new Date();
+  const nextHour = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0, 0);
+  acc.hourlyLimitResetAt = nextHour.getTime();
+  log("warn", `[AUTH] 帳號 #${accountIndex + 1} (${acc.label}) 已標記為 rate_limited，預計重置於 ${nextHour.toISOString()}`);
+}
+
+// 標記帳號為 exhausted（daily quota 用完）
+function markAccountExhausted(accountIndex) {
+  const acc = freepiAccounts[accountIndex];
+  if (!acc) return;
+  acc.status = "exhausted";
+  acc.consecutiveFailures++;
+  // 預設 daily limit 在每日重置，設為明天 00:00
+  const now = new Date();
+  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+  acc.dailyLimitResetAt = tomorrow.getTime();
+  log("warn", `[AUTH] 帳號 #${accountIndex + 1} (${acc.label}) 已標記為 exhausted，預計重置於 ${tomorrow.toISOString()}`);
+}
+
+// 標記帳號為 invalid（JWT 失效）
+function markAccountInvalid(accountIndex) {
+  const acc = freepiAccounts[accountIndex];
+  if (!acc) return;
+  acc.status = "invalid";
+  acc.consecutiveFailures++;
+  log("warn", `[AUTH] 帳號 #${accountIndex + 1} (${acc.label}) 已標記為 invalid（JWT 失效）`);
+}
+
+// 更新帳號的額度資訊（從 /me 回應）
+function updateAccountQuota(account, me) {
+  account.remainingCredits = me.remaining_credits_today ?? null;
+  account.allowanceCredits = me.allowance_credits ?? null;
+  account.capUsdToday = me.cap_usd_today ?? null;
+  account.creditUsd = me.credit_usd ?? null;
+  account.bonusCredits = me.bonus_credits ?? null;
+  account.lane = me.lane ?? null;
+  account.tier = me.tier ?? null;
+  account.lastChecked = new Date().toISOString();
+}
+
+// 取得當前帳號的 JWT（供 freepiHeaders / freepiFetchRaw 使用）
+function getFreepiJwt() {
+  return getCurrentAccountJwt();
+}
+
+// 取得當前帳號來源（供 /health 顯示）
+function getFreepiJwtSource() {
+  return freepiJwtSource;
+}
+
+// 遮罩 JWT 供日誌顯示
+function maskJwt(jwt) {
+  const s = String(jwt || "");
+  return s.length > 16 ? `${s.slice(0, 8)}…${s.slice(-6)}` : "…";
 }
 
 // ── Device-flow login（移植自 free-pi-cli src/auth-flow.ts / run.ts）────
@@ -713,10 +934,11 @@ async function deviceFlowLogin() {
 
 // ── Upstream headers ───────────────────────────────────────────────
 function freepiHeaders(sessionId, body, model) {
+  const jwt = getCurrentAccountJwt();
   const headers = {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(body),
-    "Authorization": `Bearer ${freepiJwt}`,
+    "Authorization": `Bearer ${jwt}`,
     "x-session-id": sessionId,
     "x-client-version": FREEPI_CLIENT_VERSION,
   };
@@ -735,12 +957,13 @@ function freepiHeaders(sessionId, body, model) {
 // free-pi.ai 限制每個帳號最多 4 個並行 session，超過會回 409。
 // 本函數在啟動時及遇到 409 錯誤時自動調用，避免手動執行 /close-other-session。
 async function releaseSession() {
-  if (!freepiJwt) return false;
+  const jwt = getCurrentAccountJwt();
+  if (!jwt) return false;
   try {
     const res = await fetch(freepiUrl("/session/reset"), {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${freepiJwt}`,
+        "Authorization": `Bearer ${jwt}`,
         "Content-Type": "application/json",
       },
     });
@@ -764,7 +987,7 @@ async function releaseSession() {
 
 // 啟動時嘗試釋放殘留 session（在 JWT 載入後調用）
 async function releaseSessionAtStartup() {
-  if (!freepiJwt) return;
+  if (!getCurrentAccountJwt()) return;
   await releaseSession();
 }
 
@@ -851,6 +1074,7 @@ let lastQuotaInfo = null;
 async function freepiFetchWithRetry(opts, body, controller) {
   let lastRes = null;
   let sessionResetTried = false;
+  let accountSwitchTried = false;
   for (let attempt = 0; ; attempt++) {
     const res = await freepiFetchImpl(opts, body, controller);
     lastRes = res;
@@ -860,52 +1084,86 @@ async function freepiFetchWithRetry(opts, body, controller) {
       log("warn", `[FREEPI 409 ${opts._tag || "??"}] session limit reached — releasing stale session`);
       await releaseSession();
       // 重新獲取 JWT（可能已失效）並重試
-      if (freepiJwt) {
+      if (getCurrentAccountJwt()) {
         await sleep(1000);
         continue;
       }
       return res;
     }
+    // 429 處理：依錯誤代碼分類
+    if (res.status === 429 && attempt < RETRY_429_MAX) {
+      let raw = "";
+      try {
+        raw = await res.clone().text();
+      } catch {
+        return res;
+      }
+      const p = parseUpstreamError(raw);
+
+      // 日額度用完（不重試同一帳號，切換帳號）
+      if (/^(creditlimitexceeded|insufficient_quota|billing_error|budgetlimiterror|gousagelimiterror)$/.test(p.code)) {
+        markAccountExhausted(currentAccountIndex);
+        lastQuotaInfo = await getFreepiQuota();
+        if (switchToNextAccount()) {
+          log("warn", `[FREEPI 429 ${p.code}] 帳號額度用完，已切換到下一個帳號，立即重試`);
+          continue;
+        }
+        log("error", `[FREEPI 429 ${p.code}] 所有帳號額度皆用完`);
+        return res;
+      }
+
+      // 每小時限制（rate_limit_exceeded）：切換帳號，立即重試，不等待 backoff
+      if (p.code === "rate_limit_exceeded") {
+        markAccountRateLimited(currentAccountIndex);
+        lastQuotaInfo = await getFreepiQuota();
+        if (switchToNextAccount()) {
+          log("warn", `[FREEPI 429 rate_limit_exceeded] 帳號達到每小時限制，已切換到下一個帳號，立即重試`);
+          continue;
+        }
+        log("error", `[FREEPI 429 rate_limit_exceeded] 所有帳號皆達到每小時限制`);
+        return res;
+      }
+
+      // 其他可重試的 429：保留現有指數退避邏輯
+      if (!isRetryableLimit(res.status, raw)) return res;
+      const retryAfterMs = parseRetryAfterMs(res.headers);
+      if (isHardQuotaWait(retryAfterMs)) {
+        const mins = Math.round(retryAfterMs / 60000);
+        log("error", `[FREEPI 429 DAILY QUOTA] free quota exhausted; resets in ~${mins} min — not retrying`);
+        lastQuotaInfo = await getFreepiQuota();
+        return res;
+      }
+      const wait = retryDelay(attempt, retryAfterMs);
+      log("warn", `[FREEPI 429 RETRY ${attempt + 1}/${RETRY_429_MAX}] upstream rate limit, waiting ${wait}ms`);
+      try { await res.arrayBuffer(); } catch {}
+      await sleep(wait);
+      if (controller.signal.aborted) return res;
+      continue;
+    }
     if (res.status !== 429 || attempt >= RETRY_429_MAX) {
       return res;
     }
-    let raw = "";
-    try {
-      raw = await res.clone().text();
-    } catch {
-      return res;
-    }
-    if (!isRetryableLimit(res.status, raw)) return res;
-    const retryAfterMs = parseRetryAfterMs(res.headers);
-    if (isHardQuotaWait(retryAfterMs)) {
-      const mins = Math.round(retryAfterMs / 60000);
-      log("error", `[FREEPI 429 DAILY QUOTA] free quota exhausted; resets in ~${mins} min — not retrying`);
-      // 同時獲取配額資訊，以便在錯誤回應中顯示
-      lastQuotaInfo = await getFreepiQuota();
-      return res;
-    }
-    const wait = retryDelay(attempt, retryAfterMs);
-    log("warn", `[FREEPI 429 RETRY ${attempt + 1}/${RETRY_429_MAX}] upstream rate limit, waiting ${wait}ms`);
-    try { await res.arrayBuffer(); } catch {}
-    await sleep(wait);
-    if (controller.signal.aborted) return res;
   }
 }
 
 // ── 獲取 free-pi 上游額度資訊（GET /me）──────────────────────────────
 async function getFreepiQuota() {
-  if (!freepiJwt) return null;
+  const jwt = getCurrentAccountJwt();
+  if (!jwt) return null;
   try {
     const res = await fetch(freepiUrl("/me"), {
       method: "GET",
       headers: {
-        "Authorization": `Bearer ${freepiJwt}`,
+        "Authorization": `Bearer ${jwt}`,
         "Content-Type": "application/json",
       },
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) return null;
     const data = await res.json();
+    // 更新當前帳號的額度快取
+    const acc = freepiAccounts[currentAccountIndex];
+    if (acc) updateAccountQuota(acc, data);
     return {
       remaining_usd_today: data.remaining_usd_today,
       remaining_credits_today: data.remaining_credits_today,
@@ -2421,6 +2679,20 @@ app.post("/v1/messages", async (req, res) => {
 // ── Health ──────────────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
   const quota = await getFreepiQuota();
+  const accounts = freepiAccounts.map((acc) => ({
+    index: acc.index,
+    label: acc.label,
+    status: acc.status,
+    remainingCredits: acc.remainingCredits,
+    allowanceCredits: acc.allowanceCredits,
+    capUsdToday: acc.capUsdToday,
+    lane: acc.lane,
+    tier: acc.tier,
+    lastChecked: acc.lastChecked,
+    hourlyLimitResetAt: acc.hourlyLimitResetAt,
+    dailyLimitResetAt: acc.dailyLimitResetAt,
+    consecutiveFailures: acc.consecutiveFailures,
+  }));
   const health = {
     status: "ok",
     version: `v${PROXY_VERSION}`,
@@ -2428,10 +2700,13 @@ app.get("/health", async (_req, res) => {
     models: MODELS.length,
     models_source: MODELS_ORIGIN,
     models_loaded_at: MODELS_LOADED_AT,
-    upstream_auth: freepiJwtSource,
+    upstream_auth: getFreepiJwtSource(),
+    currentAccount: currentAccountIndex >= 0 ? currentAccountIndex : -1,
+    currentAccountLabel: currentAccountIndex >= 0 ? freepiAccounts[currentAccountIndex]?.label : null,
     client_version: FREEPI_CLIENT_VERSION,
     session_ttl_ms: SESSION_TTL_MS,
     quota: quota || null,
+    accounts,
     endpoints: ["/v1/chat/completions", "/v1/messages", "/v1/models"],
   };
   res.json(health);
@@ -2489,7 +2764,7 @@ async function main() {
   // Resolve client version: CLI param > env (.env) > default
   FREEPI_CLIENT_VERSION = resolveClientVersion(process.argv.slice(2));
   loadKeys();
-  await loadFreepiJwt();
+  await loadFreepiAccounts();
   await loadModels();
   if (LOG_LEVEL !== "silent") {
     console.log(`[AUTH] Client version set to: ${FREEPI_CLIENT_VERSION}`);
@@ -2556,13 +2831,13 @@ export {
   SESSION_TTL_MS,
   loadKeys,
   setApiKeys,
-  loadFreepiJwt,
+  loadFreepiAccounts,
   deviceFlowLogin,
   getFreePiCredentialsPath,
   ENV_AUTO_LOGIN,
   CONSENT_VERSION,
-  freepiJwt,
-  freepiJwtSource,
+  getFreepiJwt,
+  getFreepiJwtSource,
   freepiUrl,
   freepiHeaders,
   freepiSessionId,
@@ -2602,4 +2877,17 @@ export {
   FREEPI_CLIENT_VERSION,
   resolveClientVersion,
   writeJwtToEnvFile,
+  saveFreepiJwt,
+  FreepiAccount,
+  freepiAccounts,
+  currentAccountIndex,
+  selectBestAccountIndex,
+  switchToNextAccount,
+  markAccountRateLimited,
+  markAccountExhausted,
+  markAccountInvalid,
+  updateAccountQuota,
+  getConfiguredJwts,
+  parseFreepiJwtList,
+  fetchFreepiMe,
 };
