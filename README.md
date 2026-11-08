@@ -232,7 +232,7 @@ curl -N -X POST http://127.0.0.1:6447/v1/chat/completions \
 | 變數 | 預設 | 說明 |
 |------|------|------|
 | `FREEPI_JWT` | - | 單一 free-pi JWT，直接提供（向後相容） |
-| `FREEPI_JWT_LIST` | - | 多個 JWT（逗號分隔，來自不同 GitHub 帳號），支援自動輪替。例：`FREEPI_JWT_LIST=jwt1,jwt2,jwt3` |
+| `FREEPI_JWT_LIST` | - | 多個 JWT（逗號或換行分隔，來自不同 GitHub 帳號，支援自動輪替）。例：`FREEPI_JWT_LIST=jwt1,jwt2,jwt3` |
 | `FREEPI_AUTO_LOGIN` | `0` | `1` = 啟動時找不到 JWT 就自動走 GitHub device flow 登入（需 TTY）。登入成功後，JWT 會同時寫入 `~/.free-pi/agent/credentials.json` 與 `.env` |
 | `FREEPI_WRITE_JWT_TO_ENV` | `1` | `1` = 從 device flow 取得 JWT 後，自動寫入 `.env` 檔案；`0` = 僅寫入 credentials.json |
 | `FREEPI_BASE_URL` | `https://api.freepi.ai` | 上游 Base URL |

@@ -39,7 +39,7 @@
 支援單一與多帳號 JWT 輪替（Multi-account Rotation）：
 
 取得方式（優先順序：命令列參數 > 環境變數/.env > credentials 檔）：
-1. `FREEPI_JWT_LIST` 環境變數（多個 JWT，逗號分隔，來自不同 GitHub 帳號；支援自動輪替）
+1. `FREEPI_JWT_LIST` 環境變數（多個 JWT，逗號或換行分隔，來自不同 GitHub 帳號；支援自動輪替）
 2. `FREEPI_JWT` 環境變數（單一 JWT，推薦部署/容器）
 3. `~/.free-pi/agent/credentials.json`（free-pi-cli 登入產生）
 4. `bun login.mjs`（本專案內建 GitHub device flow，免安裝 free-pi-cli）
@@ -116,7 +116,7 @@
 | 變數 | 預設 | 說明 |
 |------|------|------|
 | `FREEPI_JWT` | - | 單一 free-pi JWT（向後相容） |
-| `FREEPI_JWT_LIST` | - | 多個 JWT（逗號分隔，來自不同 GitHub 帳號，支援自動輪替） |
+| `FREEPI_JWT_LIST` | - | 多個 JWT（逗號或換行分隔，來自不同 GitHub 帳號，支援自動輪替） |
 | `FREEPI_AUTO_LOGIN` | `0` | `1` = 啟動時找不到 JWT 就自動走 GitHub device flow（需 TTY） |
 | `FREEPI_WRITE_JWT_TO_ENV` | `1` | `1` = 登入後自動寫回 `.env` |
 | `FREEPI_BASE_URL` | `https://api.freepi.ai` | 上游 Base URL |

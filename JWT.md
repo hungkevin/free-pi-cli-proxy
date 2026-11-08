@@ -31,7 +31,7 @@
 
 ```
 讀取優先級（固定不變）：
-1. FREEPI_JWT_LIST 環境變數（多個 JWT，逗號分隔，來自不同 GitHub 帳號；最高優先級）
+1. FREEPI_JWT_LIST 環境變數（多個 JWT，逗號或換行分隔，來自不同 GitHub 帳號；最高優先級）
 2. FREEPI_JWT 環境變數（單一 JWT，可臨時覆寫）
 3. .env 檔案中的 FREEPI_JWT_LIST / FREEPI_JWT（推薦日常使用，持久化）
 4. ~/.free-pi/agent/credentials.json（相容備份，免安裝 free-pi-cli 時的 fallback，單一 JWT）
@@ -47,7 +47,7 @@ free-pi.ai 對每個 GitHub 帳號有每小時請求上限（hourly limit）與�
 
 ### 配置方式
 
-在 `.env` 中設定 `FREEPI_JWT_LIST`（逗號分隔，來自不同 GitHub 帳號）：
+在 `.env` 中設定 `FREEPI_JWT_LIST`（逗號或換行分隔，來自不同 GitHub 帳號）：
 
 ```env
 FREEPI_JWT_LIST=eyJhbGci…JWT_A,eyJhbGci…JWT_B,eyJhbGci…JWT_C

@@ -491,11 +491,12 @@ function saveFreepiJwt(jwt) {
   writeJwtToEnvFile(jwt);
 }
 
-// 解析 FREEPI_JWT_LIST 環境變數（逗號分隔，來自不同 GitHub 帳號）
+// 解析 FREEPI_JWT_LIST 環境變數（支援逗號或換行分隔，來自不同 GitHub 帳號）
+// JWT 本身為 base64url 字串，不含逗號或換行，可安全以此切分
 function parseFreepiJwtList() {
   const raw = process.env.FREEPI_JWT_LIST || "";
   return raw
-    .split(",")
+    .split(/[,\r\n]+/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 }
