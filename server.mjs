@@ -224,6 +224,11 @@ const GRAVITY_PIXEL_ID = "6cd74804-0541-4d9b-899d-d7fceb465b6f";
 let gravityPixelInstance = null;
 let gravityContextGetter = null;
 
+// Gravity 停用開關：支援 free-pi-cli 的 FREEPI_NO_GRAVITY_PIXEL 與 proxy 的 GRAVITY_DISABLE_PIXEL
+function isGravityDisabled() {
+  return process.env.FREEPI_NO_GRAVITY_PIXEL === "1" || process.env.GRAVITY_DISABLE_PIXEL === "1";
+}
+
 function userIdFromJwt(jwt) {
   try {
     const payload = JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8"));
@@ -236,7 +241,7 @@ function userIdFromJwt(jwt) {
 // 初始化 Gravity pixel（啟動時調用一次）
 async function initGravityPixel(jwt) {
   try {
-    if (process.env.GRAVITY_DISABLE_PIXEL === "1") return;
+    if (isGravityDisabled()) return;
     const userId = userIdFromJwt(jwt);
     if (!userId) {
       log("warn", "[GRAVITY] Cannot extract userId from JWT, skipping pixel init");
@@ -300,12 +305,14 @@ let currentAd = null; // 當前廣告資訊 { ad_id, click_token, imp_url, creat
 const AD_REFRESH_MS = envInt("AD_REFRESH_MS", 600000);
 
 // ── 廣告請求 headers（與 freepiHeaders 類似，但針對 /ads/* 端點）──
-function adHeaders() {
+// x-session-id 僅在 /ads/next 和 /ads/impression 發送（與 free-pi-cli src/vendor/pi-ads/api.ts 一致）。
+function adHeaders(sessionId) {
   const jwt = getCurrentAccountJwt();
   const headers = {
     "Authorization": `Bearer ${jwt}`,
     "Content-Type": "application/json",
   };
+  if (sessionId) headers["x-session-id"] = sessionId;
   const gravityCtx = getGravityContextHeader();
   if (gravityCtx) {
     headers["x-gravity-context"] = gravityCtx;
@@ -384,7 +391,7 @@ async function postImpression(ad) {
 
 // ── 完整廣告展示流程（1. 獲取 2. 顯示像素 3. 上報）──────────────────
 async function showAd() {
-  if (!getCurrentAccountJwt()) return;
+  if (!getCurrentAccountJwt() || isGravityDisabled()) return;
   const ad = await fetchAdNext();
   if (!ad) return;
   // 並行發送展示像素與上報（兩者都是 fire-and-forget 性質）
@@ -398,7 +405,7 @@ setInterval(async () => {
 
 // 初始化廣告（在 JWT 載入後調用）
 async function initAds() {
-  if (!getCurrentAccountJwt() || process.env.GRAVITY_DISABLE_PIXEL === "1") return;
+  if (!getCurrentAccountJwt() || isGravityDisabled()) return;
   await showAd();
 }
 
@@ -442,18 +449,20 @@ function getFreePiCredentialsPath() {
   return path.join(homedir(), ".free-pi", "agent", "credentials.json");
 }
 
-// 驗證單一 JWT 是否有效（GET /me）
+// 驗證單一 JWT 是否有效（GET /me），回傳 { valid, consentVersion }
+// consentVersion: null = 伺服器未記錄同意；undefined = 舊伺服器不回傳此欄位
 async function verifyFreepiJwt(jwt) {
   try {
     const res = await fetch(freepiUrl("/me"), {
       method: "GET",
       headers: { "Authorization": `Bearer ${jwt}` },
     });
-    if (res.status === 401) return false;
-    if (!res.ok) return true; // 其他錯誤（如網路問題）不視為 JWT 無效
-    return true;
+    if (res.status === 401) return { valid: false, consentVersion: null };
+    if (!res.ok) return { valid: true, consentVersion: undefined }; // 其他錯誤不視為 JWT 無效
+    const data = await res.json().catch(() => ({}));
+    return { valid: true, consentVersion: data.consent_version ?? null };
   } catch {
-    return true; // 網路錯誤不視為 JWT 無效
+    return { valid: true, consentVersion: undefined }; // 網路錯誤不視為 JWT 無效
   }
 }
 
@@ -475,6 +484,26 @@ async function fetchFreepiMe(jwt) {
   }
 }
 
+// 提交使用者同意（POST /me/consent），當伺服器要求重新同意時調用
+async function submitFreepiConsent(jwt) {
+  try {
+    const res = await fetch(freepiUrl("/me/consent"), {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${jwt}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ consent_version: CONSENT_VERSION }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.status === 401) return { ok: false, unauthorized: true };
+    if (!res.ok) return { ok: false, status: res.status };
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || e };
+  }
+}
+
 // 將單一 JWT 寫入 credentials.json 與 .env（供 login.mjs / device flow 使用）
 function saveFreepiJwt(jwt) {
   // 寫入 credentials.json（free-pi-cli 相容格式，僅單一 token）
@@ -489,6 +518,29 @@ function saveFreepiJwt(jwt) {
   }
   // 寫入 .env
   writeJwtToEnvFile(jwt);
+}
+
+// 清除失效的 JWT（對應 free-pi-cli src/credentials.ts clearJwt）
+function clearFreepiJwt() {
+  const credPath = getFreePiCredentialsPath();
+  try {
+    fs.rmSync(credPath, { force: true });
+    log("info", `[AUTH] 已清除 ${credPath}`);
+  } catch {
+    // 檔案不存在或無法刪除，忽略
+  }
+  // 也從 .env 移除 FREEPI_JWT（僅移除單一 JWT 欄位，保留 FREEPI_JWT_LIST）
+  try {
+    let envContent = fs.readFileSync(ENV_FILE_PATH, "utf8");
+    const lines = envContent.split(/\r?\n/);
+    const filtered = lines.filter((l) => !l.startsWith("FREEPI_JWT="));
+    if (filtered.length !== lines.length) {
+      fs.writeFileSync(ENV_FILE_PATH, filtered.join("\n") + "\n");
+      log("info", `[AUTH] 已從 .env 移除 FREEPI_JWT`);
+    }
+  } catch {
+    // .env 不存在或無法寫入，忽略
+  }
 }
 
 // 解析 FREEPI_JWT_LIST 環境變數（支援逗號或換行分隔，來自不同 GitHub 帳號）
@@ -571,12 +623,32 @@ async function initializeAccountsFromJwts(jwts, source) {
     const jwt = jwts[i];
     const account = new FreepiAccount(jwt, `account-${i + 1}`, i);
 
-    const valid = await verifyFreepiJwt(jwt);
-    if (!valid) {
+    const result = await verifyFreepiJwt(jwt);
+    if (!result.valid) {
       account.status = "invalid";
       log("warn", `[AUTH] JWT #${i + 1} (${maskJwt(jwt)}) 無效，已標記為 invalid`);
+      // 單一 JWT 情況下清除儲存的 JWT，以便下次重新登入
+      if (jwts.length === 1) clearFreepiJwt();
       freepiAccounts.push(account);
       continue;
+    }
+
+    // 同意版本檢查：伺服器要求的 consent_version 與本地不同，需重新同意
+    const serverConsent = result.consentVersion;
+    if (serverConsent !== undefined && serverConsent !== CONSENT_VERSION) {
+      log("warn", `[AUTH] JWT #${i + 1} (${maskJwt(jwt)}) 同意版本過期（伺服器=${serverConsent}, 本地=${CONSENT_VERSION}）`);
+      const submitted = await submitFreepiConsent(jwt);
+      if (submitted.ok) {
+        log("info", `[AUTH] JWT #${i + 1} (${maskJwt(jwt)}) 同意已重新提交`);
+      } else if (submitted.unauthorized) {
+        account.status = "invalid";
+        log("warn", `[AUTH] JWT #${i + 1} (${maskJwt(jwt)}) 重新同意失敗（401 無效），已標記為 invalid`);
+        if (jwts.length === 1) clearFreepiJwt();
+        freepiAccounts.push(account);
+        continue;
+      } else {
+        log("warn", `[AUTH] JWT #${i + 1} (${maskJwt(jwt)}) 同意重新提交失敗：${submitted.status ?? submitted.error}`);
+      }
     }
 
     // 抓取 /me 額度資訊
@@ -726,6 +798,7 @@ function updateAccountQuota(account, me) {
   account.bonusCredits = me.bonus_credits ?? null;
   account.lane = me.lane ?? null;
   account.tier = me.tier ?? null;
+  account.refillAt = me.refill_at ?? null;
   account.lastChecked = new Date().toISOString();
 }
 
@@ -1174,6 +1247,7 @@ async function getFreepiQuota() {
       bonus_credits: data.bonus_credits,
       lane: data.lane,
       tier: data.tier,
+      refill_at: data.refill_at ?? null,
       updated_at: new Date().toISOString(),
     };
   } catch (e) {
@@ -1459,6 +1533,9 @@ function applyClientVersion(data) {
   }
 
   log("info", `[MODELS] Loaded ${MODELS.length} model(s) from /client-version`);
+  if (data?.notice) {
+    log("info", `[MODELS] Server notice: ${data.notice}`);
+  }
   MODELS_ORIGIN = "live";
   MODELS_LOADED_AT = new Date().toISOString();
   return true;

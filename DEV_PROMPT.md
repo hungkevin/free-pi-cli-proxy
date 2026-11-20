@@ -48,10 +48,11 @@
 `FREEPI_WRITE_JWT_TO_ENV=1`：登入成功後自動將 JWT 寫回 `.env`（預設開啟）
 
 多帳號輪替行為：
-- 啟動時驗證所有 JWT，選擇剩餘額度最高的 active 帳號
+- 啟動時驗證所有 JWT，抓取 `/me` 額度與同意版本，選擇剩餘額度最高的 active 帳號
+- **同意版本檢查**：若伺服器回傳的 `consent_version` 與本地 `CONSENT_VERSION` 不同，自動提交重新同意（`POST /me/consent`）；失敗（401）時標記為 invalid 並清除 JWT
 - 收到 429 rate_limit_exceeded（每小時限制）時，標記該帳號並立即切換到下一個 active 帳號
 - 收到 429 creditlimitexceeded / insufficient_quota（每日額度用完）時，標記該帳號並切換到下一個帳號
-- `/health` 端點顯示所有帳號狀態與剩餘額度
+- `/health` 端點顯示所有帳號狀態、剩餘額度與 `refill_at`（下次重置時間）
 
 ## 3. Gravity 廣告機制（完全自動化，免執行 npx free-pi-cli@latest）
 
@@ -76,7 +77,8 @@
 - `GRAVITY_PIXEL_ID`：Gravity 像素 ID（預設 `6cd74804-0541-4d9b-899d-d7fceb465b6f`，與 free-pi-cli 相同）
 - `GRAVITY_STORAGE_DIR`：Gravity 儲存目錄（預設 `~/.free-pi/gravity`）
 - `GRAVITY_DISABLE_PIXEL=1`：停用 Gravity pixel（可能導致 403 廣告錯誤）
-- `AD_REFRESH_MS`：廣告刷新間隔（預設 600000ms = 10 分鐘）
+- `FREEPI_NO_GRAVITY_PIXEL=1`：與 `GRAVITY_DISABLE_PIXEL` 相同，與 free-pi-cli 相容
+- `AD_REFRESH_MS`：廣告刷新間隔（預設 600,000ms = 10 分鐘）
 
 ─────────────────────────────────────────────────────────────────────────────
 
@@ -98,7 +100,7 @@
 - tool_use / tool_result 區塊轉換
 
 ## 7. 健康檢查
-- `GET /health`：status、version、runtime、models 數、models_source、models_loaded_at、upstream_auth、client_version、session_ttl_ms、**currentAccount**、**currentAccountLabel**、**quota**（當前帳號）、**accounts**（所有帳號狀態與額度）、endpoints 清單
+- `GET /health`：status、version、runtime、models 數、models_source、models_loaded_at、upstream_auth、client_version、session_ttl_ms、**currentAccount**、**currentAccountLabel**、**quota**（當前帳號，含 `refill_at` 下次重置時間）、**accounts**（所有帳號狀態與額度）、endpoints 清單
 
 ## 8. Session 映射
 - 依 API key + 可選 `x-session-id` header 復用上游 session id

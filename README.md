@@ -260,7 +260,8 @@ curl -N -X POST http://127.0.0.1:6447/v1/chat/completions \
 | `MASK_KEYS` | `0` | `1` = 啟動時遮罩印出的 keys |
 | `GRAVITY_PIXEL_ID` | `6cd74804-0541-4d9b-899d-d7fceb465b6f` | Gravity 像素 ID，與 free-pi-cli 相同，一般無需修改 |
 | `GRAVITY_STORAGE_DIR` | `~/.free-pi/gravity` | Gravity 儲存目錄 |
-| `GRAVITY_DISABLE_PIXEL` | `0` | `1` = 停用 Gravity pixel（但可能導致 403 廣告錯誤） |
+| `GRAVITY_DISABLE_PIXEL` | `0` | `1` = 停用 Gravity pixel（但可能導致 403 廣告錯誤）。亦可用 `FREEPI_NO_GRAVITY_PIXEL=1` |
+| `FREEPI_NO_GRAVITY_PIXEL` | `0` | `1` = 停用 Gravity pixel（與 `GRAVITY_DISABLE_PIXEL` 相同，與 free-pi-cli 相容） |
 | `AD_REFRESH_MS` | `600000` | 廣告刷新間隔（毫秒），預設 600000ms = 10 分鐘 |
 
 > ⚠️ **廣告展示**：proxy 會自動初始化 Gravity pixel 並自動獲取/展示廣告（GET /ads/next + GET imp_url + POST /ads/impression）。
@@ -280,6 +281,10 @@ curl -N -X POST http://127.0.0.1:6447/v1/chat/completions \
 > 若收到 `You've already got 4 free-pi CLI sessions running`，proxy 會在啟動時自動調用 `POST /session/reset` 釋放殘留 session。
 > 若請求時收到 409 錯誤，proxy 會自動重置並重試一次。
 > 無需手動執行 `/close-other-session` 或 `npx free-pi-cli@latest`。
+
+> ⚠️ **同意版本檢查**：proxy 啟動時會檢查 JWT 的同意版本（`consent_version`）。若伺服器要求的版本與本地不同，proxy 會自動提交重新同意（`POST /me/consent`）。若重新同意失敗（401），該 JWT 會被標記為無效並從 `credentials.json` 與 `.env` 中清除。
+
+> ⚠️ **JWT 失效清除**：當 JWT 導致 `401 Unauthorized` 時，proxy 會清除 `~/.free-pi/agent/credentials.json` 與 `.env` 中的 `FREEPI_JWT` 欄位，並提示重新執行登入流程。
 
 ## 專案結構
 

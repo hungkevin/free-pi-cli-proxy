@@ -72,11 +72,12 @@ FREEPI_JWT=eyJhbGci…單一JWT
 
 ### 轉換邏輯
 
-1. 啟動時驗證所有 JWT，抓取 `/me` 額度，選擇剩餘額度最高的 active 帳號
-2. 收到 `429 rate_limit_exceeded` → 標記該帳號為 `rate_limited`，立即切換到下一個 active 帳號
-3. 收到 `429 creditlimitexceeded` / `insufficient_quota` → 標記該帳號為 `exhausted`，切換到下一個 active 帳號
-4. 所有帳號皆不可用時，才將 429 錯誤回傳給客戶端
-5. `/health` 端點顯示所有帳號的狀態與剩餘額度
+1. 啟動時驗證所有 JWT，抓取 `/me` 額度與同意版本，選擇剩餘額度最高的 active 帳號
+2. **同意版本檢查**：若伺服器回傳的 `consent_version` 與本地 `CONSENT_VERSION` 不同，proxy 會自動提交重新同意（`POST /me/consent`）。若重新同意失敗（401），該 JWT 會被標記為 `invalid`，並從 `credentials.json` 與 `.env` 中清除。
+3. 收到 `429 rate_limit_exceeded` → 標記該帳號為 `rate_limited`，立即切換到下一個 active 帳號
+4. 收到 `429 creditlimitexceeded` / `insufficient_quota` → 標記該帳號為 `exhausted`，切換到下一個 active 帳號
+5. 所有帳號皆不可用時，才將 429 錯誤回傳給客戶端
+6. `/health` 端點顯示所有帳號的狀態、剩餘額度與 `refill_at`（下次重置時間）
 
 > ⚠️ 這需要 **不同的 GitHub 帳號** 各自登入取得 JWT。同一個 GitHub 帳號的多個 JWT 共享同一個額度與限制，無法透過多 JWT 繞過 hourly limit。
 
@@ -114,6 +115,7 @@ FREEPI_JWT=eyJhbGci…單一JWT
 當 JWT 導致 `401 Unauthorized` 時：
 
 - 清除該來源（`.env` 或 `credentials.json` 中的對應值）
+- proxy 會調用 `clearFreepiJwt()` 清除 `~/.free-pi/agent/credentials.json` 與 `.env` 中的 `FREEPI_JWT` 欄位
 - 提示使用者重新執行登入流程
 - 不應自動嘗試舊 JWT
 
@@ -158,8 +160,9 @@ $env:FREEPI_JWT_LIST="JWT_A,JWT_B"; bun server.mjs
 > 2. 所有登入程序取得新 JWT 後，必須**雙寫** `credentials.json` 與 `.env`；
 > 3. `server.mjs` 啟動時優先讀 `.env`，若無則 fallback 至 `credentials.json` 並自動回寫 `.env`；
 > 4. 支援多帳號輪替：單一帳號 hit hourly/daily limit 時自動切換到下一個可用帳號；
-> 5. JWT 失效時清除對應來源，提示重新登入；
-> 6. 避免兩程序同時自動登入，建議由 Proxy 統一負責 JWT 獲取與同步。
+> 5. **同意版本檢查**：啟動時檢查 JWT 的 `consent_version`，若與本地 `CONSENT_VERSION` 不同會自動提交重新同意；失敗（401）時清除該 JWT；
+> 6. JWT 失效時清除對應來源，提示重新登入；
+> 7. 避免兩程序同時自動登入，建議由 Proxy 統一負責 JWT 獲取與同步。
 
 這樣定義後，無論 CLI 與 Proxy 哪個先執行、哪個先重新登入，JWT 的位置與生效版本都可預期，不會再產生「這個程式讀那個，那個程式寫這個」的混亂。
 
